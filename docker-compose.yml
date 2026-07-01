@@ -11,33 +11,46 @@ services:
       - PUID=1000          # set to 99 on Unraid
       - PGID=1000          # set to 100 on Unraid
       - UMASK=022
-    ports:
-      - "8080:8080"          # Sonarr/Radarr connect here (host: <this-host>, port: 8080)
+    # With a dedicated macvlan IP you reach the container directly at
+    # http://192.168.4.210:8080, so no host port mapping is needed.
+    # (If you use the bridge network instead, re-add: ports: ["8080:8080"])
     volumes:
       # IMPORTANT: this MUST be the same host directory that Sonarr/Radarr mount
       # as /downloads, so the paths line up and imports (hardlinks) work.
-      - /path/on/host/downloads:/downloads
+      - /mnt/user/Downloads:/downloads
       - ./data:/data        # SQLite state — keep it persistent
+    networks:
+      lan:
+        ipv4_address: 192.168.4.210
+
+networks:
+  lan:
+    driver: macvlan          # gives the container its own IP on your LAN
+    driver_opts:
+      parent: bond0          # the host interface (bond0 / eth0 / br0)
+    ipam:
+      config:
+        - subnet: 192.168.4.0/24
+          gateway: 192.168.4.1   # your router's IP
 
 # ---------------------------------------------------------------------------
-# You already run Sonarr/Radarr in Docker. Two things to make them line up:
+# Notes for the macvlan setup above:
 #
-# 1. Shared downloads volume
-#    Sonarr/Radarr and this container must see completed files at the SAME path.
-#    If your *arr apps mount host `/path/on/host/downloads` at `/downloads`,
-#    mount the exact same host path at `/downloads` here (as above). Then leave
-#    SAVE_PATH unset (it defaults to /downloads).
-#    If the *arr apps use a different internal path (e.g. /data/downloads), set
-#    SAVE_PATH in .env to THAT path so the reported paths match theirs.
+# * Pick an IP OUTSIDE your router's DHCP pool (or reserve it) to avoid clashes.
+#   192.168.4.210 must be on the same subnet as `parent` (192.168.4.0/24 here).
 #
-# 2. Networking
-#    If Sonarr/Radarr are on a custom Docker network, add this service to it so
-#    they can reach it by name, e.g.:
+# * macvlan limitation: the Docker HOST cannot talk to this container directly
+#   (host <-> macvlan traffic is blocked by the kernel). If Sonarr/Radarr run on
+#   the SAME host in bridge/host networking, they will NOT reach 192.168.4.210
+#   unless you add a "macvlan shim" on the host, e.g.:
+#     ip link add shim link bond0 type macvlan mode bridge
+#     ip addr add 192.168.4.209/32 dev shim && ip link set shim up
+#     ip route add 192.168.4.210/32 dev shim
+#   (On Unraid, enabling "Host access to custom networks" does this for you.)
+#   If Sonarr/Radarr are on OTHER machines/containers, they reach it fine.
 #
-#    networks:
-#      - media
-#
-# networks:
-#   media:
-#     external: true
+# * Shared downloads volume: Sonarr/Radarr and this container must see completed
+#   files at the SAME path. If the *arr apps mount the same host dir at a
+#   different internal path (e.g. /data/downloads), set SAVE_PATH in .env to
+#   that path so the reported paths match theirs.
 # ---------------------------------------------------------------------------
