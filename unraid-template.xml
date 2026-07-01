@@ -1,0 +1,65 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>torbox-client</Name>
+  <Repository>ghcr.io/devblaze/torbox-client:latest</Repository>
+  <Registry>https://github.com/devblaze/torbox-client/pkgs/container/torbox-client</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/devblaze/torbox-client/issues</Support>
+  <Project>https://github.com/devblaze/torbox-client</Project>
+  <Overview>Use TorBox as a download client for Sonarr and Radarr. Emulates qBittorrent: your *arr apps send releases here, this container downloads them via TorBox and pulls the finished files to your downloads share so Sonarr/Radarr import them normally. Works like rdt-client but for TorBox.</Overview>
+  <Category>Downloaders: MediaApp:Video</Category>
+  <WebUI>http://[IP]:[PORT:8080]/health</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/devblaze/torbox-client/main/unraid-template.xml</TemplateURL>
+  <Icon>https://torbox.app/favicon.ico</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Description>Use TorBox as a download client for Sonarr/Radarr. Add it in each *arr app under Settings -&gt; Download Clients as a qBittorrent client (Host = this container/host IP, Port = 8080, Username/Password = your QBIT_USER/QBIT_PASS). Set a category such as tv-sonarr / radarr. IMPORTANT: mount the SAME downloads share here as you mount in Sonarr/Radarr, at the same path, so imports (hardlinks) work.</Description>
+  <Networking>
+    <Mode>bridge</Mode>
+    <Publish>
+      <Port>
+        <HostPort>8080</HostPort>
+        <ContainerPort>8080</ContainerPort>
+        <Protocol>tcp</Protocol>
+      </Port>
+    </Publish>
+  </Networking>
+  <Data>
+    <Volume>
+      <HostDir>/mnt/user/data/downloads</HostDir>
+      <ContainerDir>/downloads</ContainerDir>
+      <Mode>rw</Mode>
+    </Volume>
+    <Volume>
+      <HostDir>/mnt/user/appdata/torbox-client</HostDir>
+      <ContainerDir>/data</ContainerDir>
+      <Mode>rw</Mode>
+    </Volume>
+  </Data>
+  <Environment>
+    <Variable>
+      <Value/>
+      <Name>TORBOX_API_KEY</Name>
+      <Mode/>
+    </Variable>
+  </Environment>
+  <Config Name="WebUI Port" Target="8080" Default="8080" Mode="tcp" Description="Port Sonarr/Radarr connect to (the emulated qBittorrent API)." Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+  <Config Name="Downloads" Target="/downloads" Default="/mnt/user/data/downloads" Mode="rw" Description="MUST be the same downloads share (at the same path) that Sonarr/Radarr use, so imports work." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/data/downloads</Config>
+  <Config Name="Appdata (state)" Target="/data" Default="/mnt/user/appdata/torbox-client" Mode="rw" Description="Persistent SQLite state." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/torbox-client</Config>
+  <Config Name="TORBOX_API_KEY" Target="TORBOX_API_KEY" Default="" Mode="" Description="Your TorBox API key from https://torbox.app/settings" Type="Variable" Display="always" Required="true" Mask="true"></Config>
+  <Config Name="QBIT_USER" Target="QBIT_USER" Default="admin" Mode="" Description="Username you enter in Sonarr/Radarr." Type="Variable" Display="always" Required="true" Mask="false">admin</Config>
+  <Config Name="QBIT_PASS" Target="QBIT_PASS" Default="adminadmin" Mode="" Description="Password you enter in Sonarr/Radarr." Type="Variable" Display="always" Required="true" Mask="true">adminadmin</Config>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User ID for file ownership (Unraid default: 99 = nobody)." Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group ID for file ownership (Unraid default: 100 = users)." Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+  <Config Name="UMASK" Target="UMASK" Default="022" Mode="" Description="Umask for created files." Type="Variable" Display="advanced" Required="false" Mask="false">022</Config>
+  <Config Name="SAVE_PATH" Target="SAVE_PATH" Default="" Mode="" Description="Only set this if Sonarr/Radarr see the downloads at a DIFFERENT internal path than this container (e.g. /data/downloads). Otherwise leave blank." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+  <Config Name="POLL_INTERVAL" Target="POLL_INTERVAL" Default="15" Mode="" Description="Seconds between TorBox status polls." Type="Variable" Display="advanced" Required="false" Mask="false">15</Config>
+  <Config Name="MAX_PARALLEL_DOWNLOADS" Target="MAX_PARALLEL_DOWNLOADS" Default="4" Mode="" Description="Concurrent file downloads from the TorBox CDN." Type="Variable" Display="advanced" Required="false" Mask="false">4</Config>
+</Container>

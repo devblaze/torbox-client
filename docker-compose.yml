@@ -1,0 +1,43 @@
+services:
+  torbox-downloader:
+    # Pull the published image (recommended)...
+    image: ghcr.io/devblaze/torbox-client:latest
+    # ...or build locally instead by commenting the image line and uncommenting:
+    # build: .
+    container_name: torbox-downloader
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - PUID=1000          # set to 99 on Unraid
+      - PGID=1000          # set to 100 on Unraid
+      - UMASK=022
+    ports:
+      - "8080:8080"          # Sonarr/Radarr connect here (host: <this-host>, port: 8080)
+    volumes:
+      # IMPORTANT: this MUST be the same host directory that Sonarr/Radarr mount
+      # as /downloads, so the paths line up and imports (hardlinks) work.
+      - /path/on/host/downloads:/downloads
+      - ./data:/data        # SQLite state — keep it persistent
+
+# ---------------------------------------------------------------------------
+# You already run Sonarr/Radarr in Docker. Two things to make them line up:
+#
+# 1. Shared downloads volume
+#    Sonarr/Radarr and this container must see completed files at the SAME path.
+#    If your *arr apps mount host `/path/on/host/downloads` at `/downloads`,
+#    mount the exact same host path at `/downloads` here (as above). Then leave
+#    SAVE_PATH unset (it defaults to /downloads).
+#    If the *arr apps use a different internal path (e.g. /data/downloads), set
+#    SAVE_PATH in .env to THAT path so the reported paths match theirs.
+#
+# 2. Networking
+#    If Sonarr/Radarr are on a custom Docker network, add this service to it so
+#    they can reach it by name, e.g.:
+#
+#    networks:
+#      - media
+#
+# networks:
+#   media:
+#     external: true
+# ---------------------------------------------------------------------------
