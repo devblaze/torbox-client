@@ -33,22 +33,37 @@ Sonarr/Radarr ──(qBittorrent API)──▶ torbox-client ──(TorBox API)�
 
 The image is published to GHCR and there's a ready-made Unraid template.
 
-**Easiest — add the template by URL:**
+> **Note:** The **Template** dropdown on the *Add Container* page only lists templates that already exist on your server — you can't paste a URL into it. Use one of the two methods below to make the template appear there, or just fill in the fields by hand.
 
-1. Unraid → **Docker** tab → **Add Container**.
-2. In **Template**, paste:
+**Method 1 — install the template from URL (via SSH), then pick it from the dropdown:**
+
+1. SSH into your Unraid server (or use the web terminal) and run:
+   ```bash
+   wget -O "/boot/config/plugins/dockerMan/templates-user/my-torbox-client.xml" \
+     https://raw.githubusercontent.com/devblaze/torbox-client/main/unraid-template.xml
    ```
-   https://raw.githubusercontent.com/devblaze/torbox-client/main/unraid-template.xml
-   ```
-3. Fill in:
+2. Unraid → **Docker** tab → **Add Container**.
+3. In the **Template** dropdown, under **User templates**, choose **torbox-client**. All fields pre-fill.
+4. Adjust the values (see below), then **Apply**. The container starts on port **8080**.
+
+**Method 2 — create the container manually:**
+
+1. Unraid → **Docker** tab → **Add Container** (leave Template on *Select a template*).
+2. Set:
+   - **Repository:** `ghcr.io/devblaze/torbox-client:latest`
+   - **Network Type:** `Bridge`
+   - **Port:** add `8080` → `8080` (tcp)
+   - **Path:** `/downloads` → your downloads share, e.g. `/mnt/user/data/downloads`
+   - **Path:** `/data` → `/mnt/user/appdata/torbox-client`
+   - **Variables** (Add another Path, Port, Variable...): `TORBOX_API_KEY`, `QBIT_USER`, `QBIT_PASS`, and optionally `PUID=99`, `PGID=100`.
+3. **Apply**.
+
+**Values to set either way:**
    - **TORBOX_API_KEY** — your key from torbox.app/settings.
    - **QBIT_USER / QBIT_PASS** — leave `admin` / `adminadmin` or change them (you'll type these into Sonarr/Radarr).
    - **Downloads** — set this to the **same share your Sonarr/Radarr use**, e.g. `/mnt/user/data/downloads` → `/downloads`.
    - **Appdata (state)** — `/mnt/user/appdata/torbox-client` → `/data`.
    - **PUID/PGID** — leave `99` / `100` (Unraid defaults).
-4. **Apply**. The container starts on port **8080**.
-
-> If you don't want to use the template URL, just create a container manually with repository `ghcr.io/devblaze/torbox-client:latest`, port `8080`, the two paths above, and the env vars.
 
 ### Option B — docker compose (any Docker host)
 
