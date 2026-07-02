@@ -2,3 +2,6 @@
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+# Put the repo root on sys.path so `import app` works no matter how pytest is
+# launched (bare `pytest`, `python -m pytest`, or from an IDE).
+pythonpath = ["."]
