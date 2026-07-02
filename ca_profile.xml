@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Maintainer>
+  <Icon>https://raw.githubusercontent.com/devblaze/torbox-client/main/icons/torbox-client.png</Icon>
+  <Profile>
+    I build self-hosting tools for the *arr ecosystem. torbox-client lets you use
+    TorBox as a download client for Sonarr and Radarr by emulating qBittorrent,
+    the same way rdt-client does for Real-Debrid.
+  </Profile>
+  <WebPage>https://github.com/devblaze/torbox-client</WebPage>
+</Maintainer>

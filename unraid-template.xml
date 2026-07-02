@@ -13,7 +13,7 @@
   <Category>Downloaders: MediaApp:Video</Category>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/devblaze/torbox-client/main/unraid-template.xml</TemplateURL>
-  <Icon>https://torbox.app/favicon.ico</Icon>
+  <Icon>https://raw.githubusercontent.com/devblaze/torbox-client/main/icons/torbox-client.png</Icon>
   <ExtraParams/>
   <PostArgs/>
   <CPUset/>
