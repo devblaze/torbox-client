@@ -37,20 +37,50 @@ def test_login_throttle_window_resets(monkeypatch):
 
 # --------------------------------------------------------------------------- #
 # SSRF host classification
+#
+# getaddrinfo is mocked so these are hermetic — a real resolver (e.g. a CI
+# runner using DNS64/NAT64) can return extra records and make network-dependent
+# assertions flaky.
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("host", ["127.0.0.1", "10.0.0.1", "192.168.1.5",
-                                  "169.254.169.254", "::1"])
-def test_host_is_public_rejects_internal(host):
-    assert qbit_api._host_is_public(host) is False
+import socket
 
 
-@pytest.mark.parametrize("host", ["8.8.8.8", "1.1.1.1"])
-def test_host_is_public_allows_public(host):
-    assert qbit_api._host_is_public(host) is True
+def _fake_getaddrinfo(*ips):
+    def _gai(host, port, *a, **k):
+        out = []
+        for ip in ips:
+            if ":" in ip:
+                out.append((socket.AF_INET6, socket.SOCK_STREAM, 6, "", (ip, 0, 0, 0)))
+            else:
+                out.append((socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0)))
+        return out
+    return _gai
 
 
-def test_host_is_public_unresolvable_is_false():
-    assert qbit_api._host_is_public("nonexistent.invalid.") is False
+@pytest.mark.parametrize("ip", ["127.0.0.1", "10.0.0.1", "192.168.1.5",
+                                "169.254.169.254", "::1", "224.0.0.1", "0.0.0.0"])
+def test_host_is_public_rejects_internal(monkeypatch, ip):
+    monkeypatch.setattr(qbit_api.socket, "getaddrinfo", _fake_getaddrinfo(ip))
+    assert qbit_api._host_is_public("evil.example") is False
+
+
+@pytest.mark.parametrize("ip", ["8.8.8.8", "1.1.1.1"])
+def test_host_is_public_allows_public(monkeypatch, ip):
+    monkeypatch.setattr(qbit_api.socket, "getaddrinfo", _fake_getaddrinfo(ip))
+    assert qbit_api._host_is_public("indexer.example") is True
+
+
+def test_host_is_public_rejects_when_any_record_is_internal(monkeypatch):
+    # DNS-rebinding style: one public, one private -> must be rejected.
+    monkeypatch.setattr(qbit_api.socket, "getaddrinfo", _fake_getaddrinfo("8.8.8.8", "10.0.0.1"))
+    assert qbit_api._host_is_public("mixed.example") is False
+
+
+def test_host_is_public_unresolvable_is_false(monkeypatch):
+    def _raise(*a, **k):
+        raise socket.gaierror("nope")
+    monkeypatch.setattr(qbit_api.socket, "getaddrinfo", _raise)
+    assert qbit_api._host_is_public("nonexistent.invalid") is False
 
 
 # --------------------------------------------------------------------------- #
