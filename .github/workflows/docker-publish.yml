@@ -28,7 +28,17 @@ jobs:
         run: pip install -r requirements-dev.txt
 
       - name: Run tests
-        run: pytest -q
+        run: |
+          set +e
+          python -m pytest -rA 2>&1 | tee /tmp/pytest.out
+          code=${PIPESTATUS[0]}
+          {
+            echo '### pytest output';
+            echo '```';
+            tail -n 80 /tmp/pytest.out;
+            echo '```';
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $code
 
   build-and-push:
     needs: test
