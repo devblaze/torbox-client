@@ -40,7 +40,7 @@ The image is published to GHCR and there's a ready-made Unraid template.
 1. SSH into your Unraid server (or use the web terminal) and run:
    ```bash
    wget -O "/boot/config/plugins/dockerMan/templates-user/my-torbox-client.xml" \
-     https://raw.githubusercontent.com/devblaze/torbox-client/main/unraid-template.xml
+     https://raw.githubusercontent.com/devblaze/torbox-client/main/templates/torbox-client.xml
    ```
 2. Unraid → **Docker** tab → **Add Container**.
 3. In the **Template** dropdown, under **User templates**, choose **torbox-client**. All fields pre-fill.
@@ -192,6 +192,6 @@ app/
   logbuffer.py      in-memory ring buffer feeding the Logs tab
   static/index.html the dashboard page (vanilla HTML/JS, no build step)
 docker-entrypoint.sh  PUID/PGID privilege drop
-unraid-template.xml   Unraid Community Applications template
+templates/torbox-client.xml  Unraid Community Applications template
 .github/workflows/    builds & publishes the image to GHCR
 ```
