@@ -159,6 +159,11 @@ All configuration is via environment variables (see `.env.example`):
 | `UMASK` | `022` | Umask for created files. |
 | `POLL_INTERVAL` | `15` | Seconds between TorBox status polls. |
 | `MAX_PARALLEL_DOWNLOADS` | `4` | Concurrent file downloads from the TorBox CDN. |
+| `MAX_PARALLEL_TORRENTS` | `2` | Torrents pulled locally at the same time (0 = unlimited). |
+| `MAX_DOWNLOAD_SPEED` | `0` | Aggregate download cap in MiB/s across all files (0 = unlimited). |
+| `STALL_TIMEOUT` | `90` | Seconds without data before a stalled stream is retried with a fresh link. |
+| `DOWNLOAD_RETRIES` | `4` | Attempts per file; each retry resumes from the bytes already on disk. |
+| `TORBOX_CLEANUP_HOURS` | `24` | Delete the TorBox **cloud** copy this long after the local download completes, freeing your TorBox active-torrent slots (local files kept; 0 = never). |
 | `DELETE_FROM_TORBOX_ON_REMOVE` | `true` | Delete the cloud torrent when *arr removes the download. |
 | `TORBOX_SEED` | `1` | TorBox seeding: 1=auto, 2=always, 3=never. |
 | `LOG_LEVEL` | `INFO` | `DEBUG` for verbose logging. |

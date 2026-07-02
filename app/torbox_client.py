@@ -122,8 +122,13 @@ class TorBoxClient:
             log.warning("controltorrent %s on %s -> %s", operation, torrent_id, resp.status_code)
 
     def stream(self, url: str, headers: Optional[dict] = None):
-        """Return a streaming GET context manager for a CDN url."""
-        return self._client.stream("GET", url, headers=headers, timeout=None)
+        """Return a streaming GET context manager for a CDN url.
+
+        The read timeout doubles as stall detection: if no bytes arrive for
+        ``STALL_TIMEOUT`` seconds the stream raises instead of hanging forever.
+        """
+        timeout = httpx.Timeout(connect=15.0, read=settings.stall_timeout, write=60.0, pool=60.0)
+        return self._client.stream("GET", url, headers=headers, timeout=timeout)
 
 
 client = TorBoxClient(settings.torbox_api_key, settings.torbox_base_url)

@@ -39,6 +39,16 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+def _float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
 @dataclass(frozen=True)
 class Settings:
     # --- TorBox ---
@@ -65,6 +75,17 @@ class Settings:
     # --- Behaviour ---
     poll_interval: int = _int("POLL_INTERVAL", 15)  # seconds between TorBox polls
     max_parallel_downloads: int = _int("MAX_PARALLEL_DOWNLOADS", 4)  # concurrent file downloads
+    # Concurrent torrents being pulled locally (0 = unlimited).
+    max_parallel_torrents: int = _int("MAX_PARALLEL_TORRENTS", 2)
+    # Aggregate download speed cap in MiB/s across all files (0 = unlimited).
+    max_download_speed: float = _float("MAX_DOWNLOAD_SPEED", 0)
+    # Seconds without receiving any data before a file stream counts as stalled.
+    stall_timeout: int = _int("STALL_TIMEOUT", 90)
+    # Attempts per file (each retry gets a fresh CDN link and resumes via Range).
+    download_retries: int = _int("DOWNLOAD_RETRIES", 4)
+    # Hours after a completed local download before the TorBox cloud copy is
+    # deleted to free the account's active-torrent slots (0 = never).
+    torbox_cleanup_hours: float = _float("TORBOX_CLEANUP_HOURS", 24)
     delete_from_torbox_on_remove: bool = _bool("DELETE_FROM_TORBOX_ON_REMOVE", True)
     # If TorBox seeding is requested (1=auto, 2=always seed, 3=never seed).
     torbox_seed: int = _int("TORBOX_SEED", 1)

@@ -50,6 +50,7 @@
   .badge.added       { background: rgba(124,108,240,.15); color: var(--cloud); }
   .badge.removed     { background: rgba(62,207,142,.15);  color: var(--ok); }
   .badge.abandoned   { background: rgba(232,161,60,.15);  color: var(--warn); }
+  .badge.cloud_removed { background: rgba(124,108,240,.15); color: var(--cloud); }
   .cat { color: var(--muted); font-size: 12px; border: 1px solid var(--border); border-radius: 20px; padding: 1px 8px; }
   .meta { color: var(--muted); font-size: 12px; margin-top: 6px; display: flex; gap: 14px; flex-wrap: wrap; }
   .phases { display: grid; grid-template-columns: 64px 1fr 52px; gap: 8px 10px; align-items: center; margin-top: 10px; }
@@ -217,7 +218,7 @@ function renderActivity(data) {
 /* ---------------- History ---------------- */
 const EVENT_LABEL = {
   added: "Added", downloaded: "Downloaded", removed: "Transferred",
-  abandoned: "Removed", error: "Error",
+  abandoned: "Removed", error: "Error", cloud_removed: "Cloud cleaned",
 };
 
 function histRow(e) {

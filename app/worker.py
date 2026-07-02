@@ -32,8 +32,33 @@ log = logging.getLogger("worker")
 # Torrents whose local download is currently running, so we never start twice.
 _downloading: set[str] = set()
 _file_semaphore = asyncio.Semaphore(settings.max_parallel_downloads)
+# Failed local-pull attempts per torrent; reset on success, capped below.
+_attempts: dict[str, int] = {}
+_TORRENT_RETRY_LIMIT = 3
 
 _FAILED_STATES = {"failed", "error", "cberror", "uploaderror"}
+
+
+class _RateLimiter:
+    """Leaky-bucket limiter shared by all file streams (aggregate cap)."""
+
+    def __init__(self, rate_bytes_per_s: float):
+        self.rate = rate_bytes_per_s
+        self._next_free = 0.0
+        self._lock = asyncio.Lock()
+
+    async def throttle(self, nbytes: int) -> None:
+        if self.rate <= 0:
+            return
+        async with self._lock:
+            now = time.monotonic()
+            self._next_free = max(self._next_free, now) + nbytes / self.rate
+            wait = self._next_free - now
+        if wait > 0:
+            await asyncio.sleep(wait)
+
+
+_rate = _RateLimiter(settings.max_download_speed * (1 << 20))
 
 
 def _category_dir(category: str) -> str:
@@ -86,7 +111,13 @@ def _apply_cloud_update(t: Torrent, entry: dict) -> None:
 
 
 async def _download_file(t: Torrent, file: dict, progress: dict) -> None:
-    """Download a single TorBox file to local disk, resuming if partial."""
+    """Download a single TorBox file, resuming partials and retrying stalls.
+
+    Each attempt gets a fresh CDN link (they expire after ~3h) and resumes
+    from whatever is already on disk via a Range request. A stream that stops
+    delivering bytes for STALL_TIMEOUT seconds raises and is retried instead
+    of hanging the torrent forever.
+    """
     file_id = file["id"]
     rel = file["name"]
     expected = int(file.get("size") or 0)
@@ -94,32 +125,44 @@ async def _download_file(t: Torrent, file: dict, progress: dict) -> None:
     os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
 
     existing = os.path.getsize(dest) if os.path.exists(dest) else 0
-    if expected and existing == expected:
-        progress["done"] += expected
-        return
-    if existing > expected:  # corrupt/stale — start over
+    if expected and existing > expected:  # corrupt/stale — start over
+        os.remove(dest)
         existing = 0
+    progress["done"] += existing  # bytes already on disk count toward progress
+    if expected and existing == expected:
+        return
 
-    async with _file_semaphore:
-        url = await client.request_dl(t.torbox_id, file_id)
-        headers = {"Range": f"bytes={existing}-"} if existing else None
-        mode = "ab" if existing else "wb"
-        got = existing
-        with open(dest, mode) as fh:
-            async with client.stream(url, headers=headers) as resp:
-                if existing and resp.status_code == 200:
-                    # Server ignored Range; rewrite from scratch.
-                    fh.seek(0)
-                    fh.truncate()
-                    got = 0
-                    progress["done"] -= existing
-                resp.raise_for_status()
-                async for chunk in resp.aiter_bytes(1 << 20):  # 1 MiB
-                    fh.write(chunk)
-                    got += len(chunk)
-                    progress["done"] += len(chunk)
-    if expected and got < expected:
-        raise IOError(f"short read for {rel}: {got}/{expected}")
+    last_err: Exception | None = None
+    for attempt in range(1, settings.download_retries + 1):
+        try:
+            async with _file_semaphore:
+                url = await client.request_dl(t.torbox_id, file_id)
+                offset = os.path.getsize(dest) if os.path.exists(dest) else 0
+                headers = {"Range": f"bytes={offset}-"} if offset else None
+                with open(dest, "ab" if offset else "wb") as fh:
+                    async with client.stream(url, headers=headers) as resp:
+                        if offset and resp.status_code == 200:
+                            # Server ignored Range; rewrite from scratch.
+                            fh.seek(0)
+                            fh.truncate()
+                            progress["done"] -= offset
+                        resp.raise_for_status()
+                        async for chunk in resp.aiter_bytes(1 << 20):  # 1 MiB
+                            fh.write(chunk)
+                            progress["done"] += len(chunk)
+                            await _rate.throttle(len(chunk))
+            got = os.path.getsize(dest) if os.path.exists(dest) else 0
+            if expected and got < expected:
+                raise IOError(f"short read: {got}/{expected}")
+            return
+        except Exception as exc:  # noqa: BLE001
+            last_err = exc
+            if attempt < settings.download_retries:
+                # repr() because e.g. httpx.ReadTimeout stringifies to ""
+                log.warning("Attempt %d/%d for %s failed (%r) — resuming with a fresh link",
+                            attempt, settings.download_retries, rel, exc)
+                await asyncio.sleep(min(10 * attempt, 30))
+    raise IOError(f"{rel} failed after {settings.download_retries} attempts: {last_err!r}")
 
 
 async def _download_torrent(hash_: str) -> None:
@@ -134,6 +177,7 @@ async def _download_torrent(hash_: str) -> None:
     try:
         # A light periodic progress writer while files stream in.
         async def _report() -> None:
+            last_done = progress["done"]
             while True:
                 await asyncio.sleep(3)
                 cur = store.get(hash_)
@@ -141,8 +185,9 @@ async def _download_torrent(hash_: str) -> None:
                     return
                 cur.state = STATE_DOWNLOADING
                 cur.local_progress = min(progress["done"] / total, 1.0)
-                elapsed = max(time.time() - started, 1)
-                cur.dlspeed = int(progress["done"] / elapsed)
+                # Windowed speed: shows 0 during a stall instead of a decaying average.
+                cur.dlspeed = max(int((progress["done"] - last_done) / 3), 0)
+                last_done = progress["done"]
                 store.upsert(cur)
 
         reporter = asyncio.create_task(_report())
@@ -170,15 +215,27 @@ async def _download_torrent(hash_: str) -> None:
             size=total,
         )
         log.info("Completed local download: %s", done.name)
+        _attempts.pop(hash_, None)
     except Exception as exc:  # noqa: BLE001
         cur = store.get(hash_)
         if cur:
-            cur.state = STATE_ERROR
-            cur.error = f"local download failed: {exc}"
-            store.upsert(cur)
-            store.add_event(cur.hash, cur.name, cur.category, "error",
-                            detail=cur.error, size=cur.size)
-        log.exception("Local download failed for %s: %s", hash_, exc)
+            n = _attempts.get(hash_, 0) + 1
+            _attempts[hash_] = n
+            if n < _TORRENT_RETRY_LIMIT:
+                # Back to the cloud state so the next sync re-triggers the pull;
+                # already-downloaded bytes resume via Range.
+                cur.state = STATE_CLOUD
+                cur.dlspeed = 0
+                store.upsert(cur)
+                log.warning("Local download of %s failed (round %d/%d) — will retry: %s",
+                            cur.name, n, _TORRENT_RETRY_LIMIT, exc)
+            else:
+                cur.state = STATE_ERROR
+                cur.error = f"local download failed: {exc}"
+                store.upsert(cur)
+                store.add_event(cur.hash, cur.name, cur.category, "error",
+                                detail=cur.error, size=cur.size)
+                log.exception("Local download failed for %s: %s", hash_, exc)
     finally:
         _downloading.discard(hash_)
 
@@ -228,6 +285,41 @@ def repair_paths() -> None:
             log.info("Repaired relative save path for category %s", name)
 
 
+async def _cleanup_cloud(t: Torrent) -> None:
+    """Delete the TorBox cloud copy of a locally-completed torrent.
+
+    Frees the account's active-torrent slots; the local files (and our
+    tracking entry, so Sonarr/Radarr can still import) are kept.
+    """
+    try:
+        await client.control(t.torbox_id, "delete")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("TorBox cleanup delete failed for %s: %s", t.name, exc)
+        return
+    t.torbox_id = None
+    store.upsert(t)
+    store.add_event(t.hash, t.name, t.category, "cloud_removed",
+                    detail=f"cloud copy removed after {settings.torbox_cleanup_hours:g}h "
+                           "(local files kept)", size=t.size)
+    log.info("Removed TorBox cloud copy of %s (completed >%gh ago)",
+             t.name, settings.torbox_cleanup_hours)
+
+
+def resume_interrupted() -> None:
+    """Re-queue torrents that were mid-pull when the container stopped.
+
+    Their DB state is still 'downloading', which the sync loop treats as
+    already-running — without this they would hang at their last percentage
+    forever after a restart.
+    """
+    for t in store.all():
+        if t.state == STATE_DOWNLOADING:
+            t.state = STATE_CLOUD
+            t.dlspeed = 0
+            store.upsert(t)
+            log.info("Resuming interrupted local download after restart: %s", t.name)
+
+
 async def sync_once() -> None:
     tracked = store.all()
     if not tracked:
@@ -240,8 +332,13 @@ async def sync_once() -> None:
 
     by_id = {e.get("id"): e for e in entries if e.get("id") is not None}
     by_hash = {str(e.get("hash", "")).lower(): e for e in entries}
+    now = int(time.time())
+    cleanup_after = settings.torbox_cleanup_hours * 3600
 
     for t in tracked:
+        if (t.state == STATE_COMPLETED and cleanup_after > 0 and t.torbox_id is not None
+                and t.completion_on and now - t.completion_on >= cleanup_after):
+            await _cleanup_cloud(t)
         if t.state in (STATE_COMPLETED, STATE_ERROR):
             continue
         entry = None
@@ -259,7 +356,9 @@ async def sync_once() -> None:
             continue
 
         ready = bool(entry.get("download_finished")) and bool(entry.get("download_present", True))
-        if ready and t.hash not in _downloading and t.state != STATE_DOWNLOADING:
+        slots_full = (settings.max_parallel_torrents > 0
+                      and len(_downloading) >= settings.max_parallel_torrents)
+        if ready and t.hash not in _downloading and t.state != STATE_DOWNLOADING and not slots_full:
             t.state = STATE_DOWNLOADING
             t.save_path = _save_path(t.category)
             store.upsert(t)

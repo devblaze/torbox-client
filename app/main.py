@@ -64,6 +64,7 @@ async def _startup() -> None:
     # from accepting Sonarr/Radarr connections (or health checks).
     asyncio.create_task(_validate_key())
     worker.repair_paths()
+    worker.resume_interrupted()
     global _worker_task
     _worker_task = asyncio.create_task(worker.run())
 

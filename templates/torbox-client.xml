@@ -62,4 +62,7 @@
   <Config Name="SAVE_PATH" Target="SAVE_PATH" Default="" Mode="" Description="Only set this if Sonarr/Radarr see the downloads at a DIFFERENT internal path than this container (e.g. /data/downloads). Otherwise leave blank." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
   <Config Name="POLL_INTERVAL" Target="POLL_INTERVAL" Default="15" Mode="" Description="Seconds between TorBox status polls." Type="Variable" Display="advanced" Required="false" Mask="false">15</Config>
   <Config Name="MAX_PARALLEL_DOWNLOADS" Target="MAX_PARALLEL_DOWNLOADS" Default="4" Mode="" Description="Concurrent file downloads from the TorBox CDN." Type="Variable" Display="advanced" Required="false" Mask="false">4</Config>
+  <Config Name="MAX_PARALLEL_TORRENTS" Target="MAX_PARALLEL_TORRENTS" Default="2" Mode="" Description="Torrents pulled locally at the same time (0 = unlimited)." Type="Variable" Display="advanced" Required="false" Mask="false">2</Config>
+  <Config Name="MAX_DOWNLOAD_SPEED" Target="MAX_DOWNLOAD_SPEED" Default="0" Mode="" Description="Aggregate download speed cap in MiB/s across all files (0 = unlimited)." Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
+  <Config Name="TORBOX_CLEANUP_HOURS" Target="TORBOX_CLEANUP_HOURS" Default="24" Mode="" Description="Delete the TorBox cloud copy this long after the local download completes (0 = never). Frees your TorBox active-torrent slots; local files are kept." Type="Variable" Display="advanced" Required="false" Mask="false">24</Config>
 </Container>
