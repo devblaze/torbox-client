@@ -111,6 +111,16 @@ class Store:
                     name TEXT PRIMARY KEY,
                     save_path TEXT
                 );
+                CREATE TABLE IF NOT EXISTS history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts INTEGER,
+                    hash TEXT,
+                    name TEXT,
+                    category TEXT,
+                    size INTEGER,
+                    event TEXT,
+                    detail TEXT
+                );
                 """
             )
             self._conn.commit()
@@ -188,6 +198,30 @@ class Store:
         with _lock:
             rows = self._conn.execute("SELECT name, save_path FROM categories").fetchall()
         return {r["name"]: r["save_path"] or "" for r in rows}
+
+    # --- history (survives torrent deletion, powers the web UI) ---
+    def add_event(self, hash_: str, name: str, category: str, event: str,
+                  detail: str = "", size: int = 0) -> None:
+        with _lock:
+            self._conn.execute(
+                "INSERT INTO history (ts, hash, name, category, size, event, detail) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (int(time.time()), hash_, name, category, size, event, detail),
+            )
+            # Keep the table bounded.
+            self._conn.execute(
+                "DELETE FROM history WHERE id NOT IN "
+                "(SELECT id FROM history ORDER BY id DESC LIMIT 1000)"
+            )
+            self._conn.commit()
+
+    def history(self, limit: int = 200) -> list[dict]:
+        with _lock:
+            rows = self._conn.execute(
+                "SELECT ts, hash, name, category, size, event, detail "
+                "FROM history ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(r) for r in rows]
 
 
 store = Store(settings.db_path)

@@ -162,6 +162,13 @@ async def _download_torrent(hash_: str) -> None:
         done.save_path = _save_path(done.category)
         done.error = ""
         store.upsert(done)
+        elapsed = max(time.time() - started, 1)
+        store.add_event(
+            done.hash, done.name, done.category, "downloaded",
+            detail=f"{len(done.files)} files in {int(elapsed)}s "
+                   f"({total / elapsed / (1 << 20):.0f} MiB/s), ready for import",
+            size=total,
+        )
         log.info("Completed local download: %s", done.name)
     except Exception as exc:  # noqa: BLE001
         cur = store.get(hash_)
@@ -169,9 +176,56 @@ async def _download_torrent(hash_: str) -> None:
             cur.state = STATE_ERROR
             cur.error = f"local download failed: {exc}"
             store.upsert(cur)
+            store.add_event(cur.hash, cur.name, cur.category, "error",
+                            detail=cur.error, size=cur.size)
         log.exception("Local download failed for %s: %s", hash_, exc)
     finally:
         _downloading.discard(hash_)
+
+
+def _files_local(t: Torrent) -> bool:
+    """True if every known file is fully present under download_dir."""
+    if not t.files:
+        return False
+    base = _category_dir(t.category)
+    for f in t.files:
+        dest = os.path.join(base, f.get("name", ""))
+        try:
+            if os.path.getsize(dest) != int(f.get("size") or 0):
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def repair_paths() -> None:
+    """Fix entries recorded while SAVE_PATH was misconfigured (e.g. empty).
+
+    An empty SAVE_PATH used to make save_path/content_path relative
+    ("radarr/…"), which Sonarr/Radarr can never import from. Re-derive them
+    from the current settings so existing torrents recover after upgrade.
+    """
+    for t in store.all():
+        bad_save = bool(t.save_path) and not os.path.isabs(t.save_path)
+        bad_content = bool(t.content_path) and not os.path.isabs(t.content_path)
+        if not (bad_save or bad_content):
+            continue
+        t.save_path = _save_path(t.category)
+        if t.content_path:
+            t.content_path = _content_path(t, t.files)
+        # If the misconfiguration also sent the files somewhere else (e.g. an
+        # empty DOWNLOAD_DIR wrote into the container FS), pull them again.
+        if t.state == STATE_COMPLETED and not _files_local(t):
+            t.state = STATE_CLOUD
+            t.completion_on = 0
+            t.local_progress = 0.0
+            log.info("Files for %s missing under %s — re-downloading", t.name, _category_dir(t.category))
+        store.upsert(t)
+        log.info("Repaired relative paths for %s -> %s", t.name, t.save_path)
+    for name, path in store.categories().items():
+        if path and not os.path.isabs(path):
+            store.set_category(name, os.path.join(settings.save_path_base, name))
+            log.info("Repaired relative save path for category %s", name)
 
 
 async def sync_once() -> None:
@@ -201,6 +255,7 @@ async def sync_once() -> None:
         _apply_cloud_update(t, entry)
         if t.state == STATE_ERROR:
             store.upsert(t)
+            store.add_event(t.hash, t.name, t.category, "error", detail=t.error, size=t.size)
             continue
 
         ready = bool(entry.get("download_finished")) and bool(entry.get("download_present", True))

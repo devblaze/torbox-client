@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TorBox Downloader</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1e2230; --border: #2a2f3d;
+    --text: #e6e9f0; --muted: #8a93a6; --accent: #4f9cf9;
+    --cloud: #7c6cf0; --local: #4f9cf9; --ok: #3ecf8e; --err: #f0605c;
+    --warn: #e8a13c; --queued: #c8a24b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 5;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; white-space: nowrap; }
+  header h1 span { color: var(--accent); }
+  nav { display: flex; gap: 4px; }
+  nav button {
+    background: none; border: 0; color: var(--muted); font: inherit; font-weight: 600;
+    padding: 6px 12px; border-radius: 8px; cursor: pointer;
+  }
+  nav button.active { background: var(--panel2); color: var(--text); }
+  .stats { display: flex; gap: 14px; margin-left: auto; flex-wrap: wrap; color: var(--muted); font-size: 13px; }
+  .stats b { color: var(--text); font-weight: 600; }
+  main { padding: 18px 20px 40px; max-width: 1200px; margin: 0 auto; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px; margin-bottom: 12px;
+  }
+  .row-top { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .name { font-weight: 600; word-break: break-all; }
+  .badge {
+    font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+    padding: 2px 8px; border-radius: 20px; white-space: nowrap;
+  }
+  .badge.queued      { background: rgba(200,162,75,.15);  color: var(--queued); }
+  .badge.cloud       { background: rgba(124,108,240,.15); color: var(--cloud); }
+  .badge.downloading { background: rgba(79,156,249,.15);  color: var(--local); }
+  .badge.completed, .badge.downloaded { background: rgba(62,207,142,.15); color: var(--ok); }
+  .badge.error       { background: rgba(240,96,92,.15);   color: var(--err); }
+  .badge.added       { background: rgba(124,108,240,.15); color: var(--cloud); }
+  .badge.removed     { background: rgba(62,207,142,.15);  color: var(--ok); }
+  .badge.abandoned   { background: rgba(232,161,60,.15);  color: var(--warn); }
+  .cat { color: var(--muted); font-size: 12px; border: 1px solid var(--border); border-radius: 20px; padding: 1px 8px; }
+  .meta { color: var(--muted); font-size: 12px; margin-top: 6px; display: flex; gap: 14px; flex-wrap: wrap; }
+  .phases { display: grid; grid-template-columns: 64px 1fr 52px; gap: 8px 10px; align-items: center; margin-top: 10px; }
+  .phase-label { color: var(--muted); font-size: 12px; text-align: right; }
+  .bar { height: 8px; background: var(--panel2); border-radius: 6px; overflow: hidden; }
+  .bar i { display: block; height: 100%; border-radius: 6px; transition: width .6s ease; }
+  .bar.cloud i { background: var(--cloud); }
+  .bar.local i { background: var(--local); }
+  .pct { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .error-msg { margin-top: 8px; color: var(--err); font-size: 13px; word-break: break-all; }
+  .empty { text-align: center; color: var(--muted); padding: 60px 0; }
+  /* history */
+  .hist { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; padding: 9px 14px; }
+  .hist .when { color: var(--muted); font-size: 12px; min-width: 132px; font-variant-numeric: tabular-nums; }
+  .hist .detail { color: var(--muted); font-size: 12px; }
+  /* logs */
+  .logbar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; color: var(--muted); font-size: 13px; }
+  .logbar select {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 5px 8px; font: inherit;
+  }
+  #logbox {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px 14px; height: calc(100vh - 200px); min-height: 300px; overflow-y: auto;
+    font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre-wrap; word-break: break-all;
+  }
+  .ll { display: block; }
+  .ll .t { color: var(--muted); }
+  .ll .lg { color: var(--cloud); }
+  .ll.DEBUG { color: var(--muted); }
+  .ll.INFO { color: var(--text); }
+  .ll.WARNING { color: var(--warn); }
+  .ll.ERROR, .ll.CRITICAL { color: var(--err); }
+  /* login */
+  #login {
+    display: none; max-width: 320px; margin: 12vh auto 0; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 12px; padding: 26px;
+  }
+  #login h2 { margin: 0 0 4px; font-size: 17px; }
+  #login p { margin: 0 0 18px; color: var(--muted); font-size: 13px; }
+  #login input {
+    width: 100%; margin-bottom: 10px; padding: 9px 11px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--panel2); color: var(--text); font-size: 14px;
+  }
+  #login button {
+    width: 100%; padding: 9px; border: 0; border-radius: 8px; background: var(--accent);
+    color: #fff; font-size: 14px; font-weight: 600; cursor: pointer;
+  }
+  #login .fail { color: var(--err); font-size: 13px; margin-top: 10px; display: none; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<div id="app" class="hidden">
+  <header>
+    <h1>TorBox <span>Downloader</span></h1>
+    <nav>
+      <button data-tab="activity" class="active">Activity</button>
+      <button data-tab="history">History</button>
+      <button data-tab="logs">Logs</button>
+    </nav>
+    <div class="stats" id="stats"></div>
+  </header>
+  <main>
+    <div id="tab-activity"></div>
+    <div id="tab-history" class="hidden"></div>
+    <div id="tab-logs" class="hidden">
+      <div class="logbar">
+        Level:
+        <select id="loglevel">
+          <option value="DEBUG" selected>Debug</option>
+          <option value="INFO">Info</option>
+          <option value="WARNING">Warning</option>
+          <option value="ERROR">Error</option>
+        </select>
+        <span id="logcount"></span>
+        <span style="margin-left:auto">in-memory since last restart</span>
+      </div>
+      <div id="logbox"></div>
+    </div>
+  </main>
+</div>
+
+<form id="login">
+  <h2>Sign in</h2>
+  <p>Use the same credentials Sonarr/Radarr use (QBIT_USER / QBIT_PASS).</p>
+  <input id="u" placeholder="Username" autocomplete="username">
+  <input id="p" type="password" placeholder="Password" autocomplete="current-password">
+  <button type="submit">Sign in</button>
+  <div class="fail" id="fail">Login failed — check username/password.</div>
+</form>
+
+<script>
+const $ = id => document.getElementById(id);
+let timer = null;
+let tab = "activity";
+
+function fmtBytes(n) {
+  if (!n) return "0 B";
+  const u = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return n.toFixed(n >= 100 || i === 0 ? 0 : 1) + " " + u[i];
+}
+function fmtSpeed(n) { return n > 0 ? fmtBytes(n) + "/s" : "—"; }
+function fmtTime(ts) { return ts ? new Date(ts * 1000).toLocaleString() : "—"; }
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+/* ---------------- Activity ---------------- */
+const STATE_LABEL = {
+  queued: "Queued", cloud: "Cloud DL", downloading: "Pulling local",
+  completed: "Completed", error: "Error",
+};
+
+function bar(kind, value) {
+  const pct = Math.round(value * 100);
+  return `<div class="phase-label">${kind === "cloud" ? "Cloud" : "Local"}</div>
+          <div class="bar ${kind}"><i style="width:${pct}%"></i></div>
+          <div class="pct">${pct}%</div>`;
+}
+
+function card(t) {
+  const state = STATE_LABEL[t.state] ? t.state : "error";
+  let phases = "";
+  if (t.state === "completed") {
+    phases = bar("cloud", 1) + bar("local", 1);
+  } else if (t.state !== "error") {
+    phases = bar("cloud", t.cloud_progress) + bar("local", t.local_progress);
+  }
+  return `<div class="card">
+    <div class="row-top">
+      <span class="badge ${state}">${STATE_LABEL[t.state] || t.state}</span>
+      <span class="name">${esc(t.name)}</span>
+      ${t.category ? `<span class="cat">${esc(t.category)}</span>` : ""}
+    </div>
+    ${phases ? `<div class="phases">${phases}</div>` : ""}
+    <div class="meta">
+      <span>${fmtBytes(t.size)}</span>
+      <span>${t.file_count} file${t.file_count === 1 ? "" : "s"}</span>
+      <span>⬇ ${fmtSpeed(t.dlspeed)}</span>
+      <span>Added ${fmtTime(t.added_on)}</span>
+      ${t.completion_on ? `<span>Done ${fmtTime(t.completion_on)}</span>` : ""}
+    </div>
+    ${t.error ? `<div class="error-msg">${esc(t.error)}</div>` : ""}
+  </div>`;
+}
+
+function renderActivity(data) {
+  const s = data.summary;
+  $("stats").innerHTML =
+    `<span><b>${s.active}</b> active</span>` +
+    `<span><b>${s.completed}</b> completed</span>` +
+    (s.errored ? `<span style="color:var(--err)"><b>${s.errored}</b> error${s.errored === 1 ? "" : "s"}</span>` : "") +
+    `<span>⬇ <b>${fmtSpeed(s.dlspeed)}</b></span>`;
+  $("tab-activity").innerHTML = data.torrents.length
+    ? data.torrents.map(card).join("")
+    : `<div class="empty">Nothing tracked right now. Grab something in Sonarr/Radarr and it will show up here.</div>`;
+}
+
+/* ---------------- History ---------------- */
+const EVENT_LABEL = {
+  added: "Added", downloaded: "Downloaded", removed: "Transferred",
+  abandoned: "Removed", error: "Error",
+};
+
+function histRow(e) {
+  return `<div class="card hist">
+    <span class="when">${fmtTime(e.ts)}</span>
+    <span class="badge ${esc(e.event)}">${EVENT_LABEL[e.event] || e.event}</span>
+    <span class="name">${esc(e.name)}</span>
+    ${e.category ? `<span class="cat">${esc(e.category)}</span>` : ""}
+    ${e.size ? `<span class="detail">${fmtBytes(e.size)}</span>` : ""}
+    ${e.detail ? `<span class="detail">${esc(e.detail)}</span>` : ""}
+  </div>`;
+}
+
+function renderHistory(data) {
+  $("tab-history").innerHTML = data.events.length
+    ? data.events.map(histRow).join("")
+    : `<div class="empty">No history yet. Events appear when releases are added, downloaded, and imported.</div>`;
+}
+
+/* ---------------- Logs ---------------- */
+function renderLogs(data) {
+  const box = $("logbox");
+  const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  $("logcount").textContent = `${data.logs.length} lines`;
+  box.innerHTML = data.logs.map(l => {
+    const d = new Date(l.ts * 1000);
+    const hh = d.toTimeString().slice(0, 8);
+    return `<span class="ll ${esc(l.level)}"><span class="t">${hh}</span> ` +
+           `${esc(l.level.padEnd(7))} <span class="lg">[${esc(l.logger)}]</span> ${esc(l.msg)}</span>`;
+  }).join("");
+  if (stick) box.scrollTop = box.scrollHeight;
+}
+
+/* ---------------- plumbing ---------------- */
+async function refresh() {
+  let resp;
+  const url = tab === "history" ? "/ui/api/history"
+    : tab === "logs" ? `/ui/api/logs?level=${$("loglevel").value}`
+    : "/ui/api/state";
+  try {
+    resp = await fetch(url);
+  } catch { return; } // transient network error; next tick retries
+  if (resp.status === 403) { showLogin(); return; }
+  if (!resp.ok) return;
+  const data = await resp.json();
+  if (tab === "history") renderHistory(data);
+  else if (tab === "logs") renderLogs(data);
+  else renderActivity(data);
+}
+
+document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => {
+  tab = b.dataset.tab;
+  document.querySelectorAll("nav button").forEach(x => x.classList.toggle("active", x === b));
+  ["activity", "history", "logs"].forEach(t => $("tab-" + t).classList.toggle("hidden", t !== tab));
+  refresh();
+}));
+$("loglevel").addEventListener("change", refresh);
+
+function showLogin() {
+  clearInterval(timer); timer = null;
+  $("app").classList.add("hidden");
+  $("login").style.display = "block";
+}
+
+function showApp() {
+  $("login").style.display = "none";
+  $("app").classList.remove("hidden");
+  refresh();
+  if (!timer) timer = setInterval(refresh, 3000);
+}
+
+$("login").addEventListener("submit", async e => {
+  e.preventDefault();
+  const body = new URLSearchParams({ username: $("u").value, password: $("p").value });
+  const resp = await fetch("/api/v2/auth/login", { method: "POST", body });
+  if ((await resp.text()).trim() === "Ok.") showApp();
+  else $("fail").style.display = "block";
+});
+
+// Initial probe: if the SID cookie is still valid we skip the login form.
+fetch("/ui/api/state").then(r => r.status === 403 ? showLogin() : showApp());
+</script>
+</body>
+</html>

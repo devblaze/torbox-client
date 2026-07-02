@@ -133,6 +133,18 @@ Search for an episode/movie and hit download. In the *arr **Activity/Queue** you
 
 ---
 
+## Web UI
+
+Open `http://<host>:8080/` in a browser for a small dashboard. It refreshes automatically every few seconds and has three tabs:
+
+- **Activity** — everything currently tracked, with separate progress bars for the cloud phase (TorBox downloading) and the local pull to `/downloads`, plus speeds, sizes and errors.
+- **History** — a persistent event log of what happened: **Added** (sent to TorBox), **Downloaded** (files landed in `/downloads`), **Transferred** (imported and removed by Sonarr/Radarr), and any **Errors**. Kept in SQLite (last 1000 events), so it survives restarts and shows items after the *arr apps delete them.
+- **Logs** — a live debug log (filterable by level) capturing the worker, TorBox API calls, and every request Sonarr/Radarr make. In-memory, last 2000 lines; `docker logs` still honours `LOG_LEVEL`.
+
+Log in with the same `QBIT_USER` / `QBIT_PASS` credentials Sonarr/Radarr use. Sessions are in-memory, so you'll be asked to sign in again after the container restarts.
+
+---
+
 ## Configuration reference
 
 All configuration is via environment variables (see `.env.example`):
@@ -176,6 +188,9 @@ app/
   worker.py         poll TorBox + download finished files locally
   store.py          SQLite state
   bencode.py        infohash computation (magnet + .torrent)
+  webui.py          dashboard endpoints (serves /, state/history/logs JSON)
+  logbuffer.py      in-memory ring buffer feeding the Logs tab
+  static/index.html the dashboard page (vanilla HTML/JS, no build step)
 docker-entrypoint.sh  PUID/PGID privilege drop
 unraid-template.xml   Unraid Community Applications template
 .github/workflows/    builds & publishes the image to GHCR

@@ -343,6 +343,9 @@ def _record_added(data: dict, infohash: str | None, category: str, name_hint: st
     if t.state in ("", STATE_QUEUED) or existing is None:
         t.state = STATE_QUEUED
     store.upsert(t)
+    if existing is None:
+        store.add_event(t.hash, t.name, t.category, "added",
+                        detail=f"sent to TorBox (id={t.torbox_id})", size=t.size)
     log.info("Queued %s (torbox_id=%s category=%s)", t.name, t.torbox_id, t.category)
 
 
@@ -422,6 +425,11 @@ async def torrents_delete(request: Request) -> Response:
             except Exception as exc:  # noqa: BLE001
                 log.warning("TorBox delete failed for %s: %s", t.torbox_id, exc)
         store.delete(t.hash)
+        # Sonarr/Radarr remove a download right after importing it, so for a
+        # completed torrent this event effectively means "transferred".
+        detail = "files deleted" if delete_files else "files kept"
+        event = "removed" if t.state == STATE_COMPLETED else "abandoned"
+        store.add_event(t.hash, t.name, t.category, event, detail=detail, size=t.size)
         log.info("Removed %s (deleteFiles=%s)", t.name, delete_files)
     return PlainTextResponse("Ok.")
 
