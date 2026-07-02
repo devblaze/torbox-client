@@ -7,17 +7,21 @@ all of that to TorBox operations and our local download state.
 """
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
+import secrets
 import shutil
+import socket
 import time
-import uuid
+from collections import OrderedDict
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from fastapi import APIRouter, Cookie, Depends, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from . import bencode
+from . import bencode, worker
 from .config import settings
 from .store import (
     STATE_CLOUD,
@@ -33,11 +37,48 @@ from .torbox_client import client
 log = logging.getLogger("qbit")
 
 # Active login sessions (SID cookie values). Cleared on restart; the *arr apps
-# simply log in again after a 403.
-_SESSIONS: set[str] = set()
+# simply log in again after a 403. Bounded so a client that never reuses its
+# cookie can't grow this without limit; oldest sessions are evicted first.
+_MAX_SESSIONS = 512
+_SESSIONS: "OrderedDict[str, None]" = OrderedDict()
 
 public = APIRouter()   # login, no auth required
 api = APIRouter()      # everything else, auth required
+
+
+def _credentials_ok(username: str, password: str) -> bool:
+    # compare_digest on both fields to avoid leaking either via timing.
+    user_ok = secrets.compare_digest(username, settings.qbit_user)
+    pass_ok = secrets.compare_digest(password, settings.qbit_pass)
+    return user_ok and pass_ok
+
+
+# Per-IP login throttle: slows brute-forcing of the credentials.
+_LOGIN_MAX_FAILS = 10
+_LOGIN_WINDOW = 300  # seconds
+_failed_logins: "OrderedDict[str, tuple[int, float]]" = OrderedDict()  # ip -> (count, window_start)
+
+
+def _login_blocked(ip: str) -> bool:
+    entry = _failed_logins.get(ip)
+    if not entry:
+        return False
+    count, start = entry
+    if time.time() - start > _LOGIN_WINDOW:
+        _failed_logins.pop(ip, None)
+        return False
+    return count >= _LOGIN_MAX_FAILS
+
+
+def _record_login_failure(ip: str) -> None:
+    now = time.time()
+    count, start = _failed_logins.get(ip, (0, now))
+    if now - start > _LOGIN_WINDOW:
+        count, start = 0, now
+    _failed_logins[ip] = (count + 1, start)
+    _failed_logins.move_to_end(ip)
+    while len(_failed_logins) > 1024:
+        _failed_logins.popitem(last=False)
 
 
 # --------------------------------------------------------------------------- #
@@ -53,22 +94,30 @@ async def require_auth(SID: str | None = Cookie(default=None)) -> None:
 
 @public.post("/api/v2/auth/login")
 async def login(request: Request) -> Response:
+    ip = request.client.host if request.client else "unknown"
+    if _login_blocked(ip):
+        log.warning("Login throttled for %s (too many failures)", ip)
+        return PlainTextResponse("Fails.", status_code=200)
     form = await request.form()
     username = form.get("username", "")
     password = form.get("password", "")
-    if username == settings.qbit_user and password == settings.qbit_pass:
-        sid = uuid.uuid4().hex
-        _SESSIONS.add(sid)
+    if _credentials_ok(username, password):
+        _failed_logins.pop(ip, None)
+        sid = secrets.token_hex(16)
+        _SESSIONS[sid] = None
+        while len(_SESSIONS) > _MAX_SESSIONS:
+            _SESSIONS.popitem(last=False)
         resp = PlainTextResponse("Ok.")
         resp.set_cookie("SID", sid, httponly=True, samesite="lax", path="/")
         return resp
+    _record_login_failure(ip)
     return PlainTextResponse("Fails.", status_code=200)
 
 
 @api.post("/api/v2/auth/logout")
 async def logout(SID: str | None = Cookie(default=None)) -> Response:
     if SID:
-        _SESSIONS.discard(SID)
+        _SESSIONS.pop(SID, None)
     return PlainTextResponse("Ok.")
 
 
@@ -299,11 +348,53 @@ async def torrent_files(hash: str) -> Response:
 # --------------------------------------------------------------------------- #
 # add / delete
 # --------------------------------------------------------------------------- #
+# .torrent files are a few KiB; cap fetched/uploaded bodies well above that.
+_MAX_TORRENT_BYTES = 20 * 1024 * 1024
+
+
+def _host_is_public(host: str) -> bool:
+    """True only if every A/AAAA record for host is a public address.
+
+    Blocks SSRF to loopback/private/link-local/reserved ranges (e.g. the cloud
+    metadata endpoint) when Sonarr/Radarr hand us an indexer download URL.
+    """
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return False
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            return False
+    return True
+
+
 async def _fetch_torrent_url(url: str) -> bytes:
-    async with httpx.AsyncClient(follow_redirects=True, timeout=60) as c:
-        r = await c.get(url)
-        r.raise_for_status()
-        return r.content
+    """Fetch a .torrent over HTTP with SSRF and size protection.
+
+    Redirects are followed manually so each hop's host is re-validated, and the
+    body is streamed with a hard size cap so a huge response can't exhaust RAM.
+    """
+    async with httpx.AsyncClient(follow_redirects=False, timeout=60) as c:
+        for _ in range(5):  # bounded redirect chain
+            parsed = urlparse(url)
+            if parsed.scheme not in ("http", "https") or not parsed.hostname:
+                raise ValueError(f"unsupported torrent URL: {url!r}")
+            if not _host_is_public(parsed.hostname):
+                raise ValueError(f"refusing to fetch internal address: {parsed.hostname}")
+            async with c.stream("GET", url) as r:
+                if r.is_redirect and "location" in r.headers:
+                    url = urljoin(url, r.headers["location"])
+                    continue
+                r.raise_for_status()
+                buf = bytearray()
+                async for chunk in r.aiter_bytes(65536):
+                    buf.extend(chunk)
+                    if len(buf) > _MAX_TORRENT_BYTES:
+                        raise ValueError("torrent file exceeds size limit")
+                return bytes(buf)
+        raise ValueError("too many redirects fetching torrent URL")
 
 
 async def _add_magnet(magnet: str, category: str) -> None:
@@ -378,7 +469,10 @@ async def torrents_add(request: Request) -> Response:
     # Uploaded .torrent files (field name "torrents").
     for upload in form.getlist("torrents"):
         try:
-            content = await upload.read()  # UploadFile
+            # Read one byte past the cap to detect oversize without buffering it all.
+            content = await upload.read(_MAX_TORRENT_BYTES + 1)
+            if len(content) > _MAX_TORRENT_BYTES:
+                raise ValueError("uploaded torrent exceeds size limit")
             await _add_torrent_bytes(content, category)
             added += 1
         except Exception as exc:  # noqa: BLE001
@@ -391,13 +485,16 @@ async def torrents_add(request: Request) -> Response:
 
 def _delete_local(t: Torrent) -> None:
     """Remove the downloaded content (file or root folder) from local disk."""
-    from .worker import _category_dir  # local import to avoid a cycle at import time
-    base = _category_dir(t.category)
     roots = {f.get("name", "").split("/", 1)[0] for f in t.files if f.get("name")}
     for root in roots:
         if not root:
             continue
-        path = os.path.join(base, root)
+        try:
+            # Refuses paths that escape download_dir (e.g. a file named "../x").
+            path = worker._safe_dest(t.category, root)
+        except ValueError as exc:
+            log.warning("Refusing unsafe delete for %s: %s", t.name, exc)
+            continue
         try:
             if os.path.isdir(path):
                 shutil.rmtree(path, ignore_errors=True)
@@ -425,6 +522,7 @@ async def torrents_delete(request: Request) -> Response:
             except Exception as exc:  # noqa: BLE001
                 log.warning("TorBox delete failed for %s: %s", t.torbox_id, exc)
         store.delete(t.hash)
+        worker.forget(t.hash)
         # Sonarr/Radarr remove a download right after importing it, so for a
         # completed torrent this event effectively means "transferred".
         detail = "files deleted" if delete_files else "files kept"

@@ -1,7 +1,10 @@
 """SQLite-backed state for tracked torrents and categories.
 
-Synchronous sqlite3 access is wrapped in ``asyncio.to_thread`` by callers so it
-never blocks the event loop. A single module-level lock serialises writes.
+Access is synchronous sqlite3 guarded by a module-level lock. Calls happen from
+the asyncio event loop, so each operation briefly blocks it; that is acceptable
+here because the working set is small (tens of rows) and every statement is
+indexed by primary key, keeping each call sub-millisecond. If the tracked set
+ever grows large, move these calls behind ``asyncio.to_thread``.
 """
 from __future__ import annotations
 
@@ -128,6 +131,9 @@ class Store:
     # --- torrents ---
     def upsert(self, t: Torrent) -> None:
         t.last_update = int(time.time())
+        # get()/delete() look up by lowercased hash, so store it lowercased too;
+        # otherwise an upper/mixed-case hash would be written but never found.
+        t.hash = t.hash.lower()
         with _lock:
             self._conn.execute(
                 """
@@ -200,19 +206,24 @@ class Store:
         return {r["name"]: r["save_path"] or "" for r in rows}
 
     # --- history (survives torrent deletion, powers the web UI) ---
+    _HISTORY_LIMIT = 1000
+
     def add_event(self, hash_: str, name: str, category: str, event: str,
                   detail: str = "", size: int = 0) -> None:
         with _lock:
-            self._conn.execute(
+            cur = self._conn.execute(
                 "INSERT INTO history (ts, hash, name, category, size, event, detail) "
                 "VALUES (?,?,?,?,?,?,?)",
                 (int(time.time()), hash_, name, category, size, event, detail),
             )
-            # Keep the table bounded.
-            self._conn.execute(
-                "DELETE FROM history WHERE id NOT IN "
-                "(SELECT id FROM history ORDER BY id DESC LIMIT 1000)"
-            )
+            # Prune occasionally rather than on every insert: the trim is a full
+            # anti-join scan, so amortise it instead of paying it each event.
+            if cur.lastrowid and cur.lastrowid % 100 == 0:
+                self._conn.execute(
+                    "DELETE FROM history WHERE id NOT IN "
+                    "(SELECT id FROM history ORDER BY id DESC LIMIT ?)",
+                    (self._HISTORY_LIMIT,),
+                )
             self._conn.commit()
 
     def history(self, limit: int = 200) -> list[dict]:

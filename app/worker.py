@@ -10,10 +10,10 @@ Loop:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import time
-from typing import Optional
 
 from .config import settings
 from .store import (
@@ -31,12 +31,25 @@ log = logging.getLogger("worker")
 
 # Torrents whose local download is currently running, so we never start twice.
 _downloading: set[str] = set()
-_file_semaphore = asyncio.Semaphore(settings.max_parallel_downloads)
 # Failed local-pull attempts per torrent; reset on success, capped below.
 _attempts: dict[str, int] = {}
 _TORRENT_RETRY_LIMIT = 3
 
 _FAILED_STATES = {"failed", "error", "cberror", "uploaderror"}
+
+# Caps concurrent file streams across all torrents. Created lazily on the running
+# loop (asyncio primitives bind to the loop that first awaits them).
+_file_semaphore: asyncio.Semaphore | None = None
+_semaphore_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _semaphore() -> asyncio.Semaphore:
+    global _file_semaphore, _semaphore_loop
+    loop = asyncio.get_running_loop()
+    if _file_semaphore is None or _semaphore_loop is not loop:
+        _file_semaphore = asyncio.Semaphore(settings.max_parallel_downloads)
+        _semaphore_loop = loop
+    return _file_semaphore
 
 
 class _RateLimiter:
@@ -45,12 +58,20 @@ class _RateLimiter:
     def __init__(self, rate_bytes_per_s: float):
         self.rate = rate_bytes_per_s
         self._next_free = 0.0
-        self._lock = asyncio.Lock()
+        self._lock: asyncio.Lock | None = None
+        self._lock_loop: asyncio.AbstractEventLoop | None = None
+
+    def _get_lock(self) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        if self._lock is None or self._lock_loop is not loop:
+            self._lock = asyncio.Lock()
+            self._lock_loop = loop
+        return self._lock
 
     async def throttle(self, nbytes: int) -> None:
         if self.rate <= 0:
             return
-        async with self._lock:
+        async with self._get_lock():
             now = time.monotonic()
             self._next_free = max(self._next_free, now) + nbytes / self.rate
             wait = self._next_free - now
@@ -60,10 +81,63 @@ class _RateLimiter:
 
 _rate = _RateLimiter(settings.max_download_speed * (1 << 20))
 
+# Strong references to detached tasks so the event loop can't GC them mid-flight
+# (asyncio only holds a weak reference to the task returned by create_task).
+_background_tasks: set[asyncio.Task] = set()
+
+# Wall-clock of the last completed sync loop iteration; surfaced by /health so a
+# wedged worker is observable. Seeded at import so startup isn't reported stale.
+_last_tick: float = time.time()
+
+
+def _spawn(coro) -> asyncio.Task:
+    """create_task that keeps a strong reference until the task finishes."""
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
+
+def last_tick() -> float:
+    return _last_tick
+
+
+def forget(hash_: str) -> None:
+    """Drop per-torrent worker state when a torrent is removed."""
+    _downloading.discard(hash_)
+    _attempts.pop(hash_, None)
+
+
+async def shutdown() -> None:
+    """Cancel in-flight download tasks and wait for them to unwind.
+
+    Must run before the shared httpx client is closed, otherwise closing it
+    tears down live streams mid-write and leaves truncated files on disk.
+    """
+    tasks = list(_background_tasks)
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
 
 def _category_dir(category: str) -> str:
     """Local dir this container writes into."""
     return os.path.join(settings.download_dir, category) if category else settings.download_dir
+
+
+def _safe_dest(category: str, rel: str) -> str:
+    """Resolve ``download_dir/category/rel``, refusing paths that escape it.
+
+    ``category`` comes from Sonarr/Radarr and ``rel`` from the TorBox API; a
+    ``..`` in either must never let us write or delete outside the downloads
+    mount. ``realpath`` also collapses symlinks in the resolved target.
+    """
+    root = os.path.realpath(settings.download_dir)
+    dest = os.path.realpath(os.path.join(root, category, rel))
+    if dest != root and not dest.startswith(root + os.sep):
+        raise ValueError(f"path escapes download dir: category={category!r} rel={rel!r}")
+    return dest
 
 
 def _save_path(category: str) -> str:
@@ -121,7 +195,7 @@ async def _download_file(t: Torrent, file: dict, progress: dict) -> None:
     file_id = file["id"]
     rel = file["name"]
     expected = int(file.get("size") or 0)
-    dest = os.path.join(_category_dir(t.category), rel)
+    dest = _safe_dest(t.category, rel)
     os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
 
     existing = os.path.getsize(dest) if os.path.exists(dest) else 0
@@ -135,7 +209,7 @@ async def _download_file(t: Torrent, file: dict, progress: dict) -> None:
     last_err: Exception | None = None
     for attempt in range(1, settings.download_retries + 1):
         try:
-            async with _file_semaphore:
+            async with _semaphore():
                 url = await client.request_dl(t.torbox_id, file_id)
                 offset = os.path.getsize(dest) if os.path.exists(dest) else 0
                 headers = {"Range": f"bytes={offset}-"} if offset else None
@@ -168,6 +242,11 @@ async def _download_file(t: Torrent, file: dict, progress: dict) -> None:
 async def _download_torrent(hash_: str) -> None:
     t = store.get(hash_)
     if not t or not t.torbox_id or not t.files:
+        # Revert the DB state the sync loop set before spawning us, otherwise the
+        # torrent is stuck in 'downloading' with no task backing it.
+        if t and t.state == STATE_DOWNLOADING:
+            t.state = STATE_CLOUD
+            store.upsert(t)
         _downloading.discard(hash_)
         return
     total = sum(int(f.get("size") or 0) for f in t.files) or t.size or 1
@@ -192,9 +271,16 @@ async def _download_torrent(hash_: str) -> None:
 
         reporter = asyncio.create_task(_report())
         try:
-            await asyncio.gather(*(_download_file(t, f, progress) for f in t.files))
+            # TaskGroup (unlike gather) cancels the still-running file downloads
+            # as soon as one fails, so a failed torrent leaves no detached tasks
+            # writing to disk when we retry it — that used to corrupt files.
+            async with asyncio.TaskGroup() as tg:
+                for f in t.files:
+                    tg.create_task(_download_file(t, f, progress))
         finally:
             reporter.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await reporter
 
         done = store.get(hash_)
         if not done:
@@ -217,6 +303,9 @@ async def _download_torrent(hash_: str) -> None:
         log.info("Completed local download: %s", done.name)
         _attempts.pop(hash_, None)
     except Exception as exc:  # noqa: BLE001
+        # TaskGroup wraps failures in an ExceptionGroup; surface the first cause.
+        if isinstance(exc, BaseExceptionGroup):
+            exc = exc.exceptions[0]
         cur = store.get(hash_)
         if cur:
             n = _attempts.get(hash_, 0) + 1
@@ -244,13 +333,12 @@ def _files_local(t: Torrent) -> bool:
     """True if every known file is fully present under download_dir."""
     if not t.files:
         return False
-    base = _category_dir(t.category)
     for f in t.files:
-        dest = os.path.join(base, f.get("name", ""))
         try:
+            dest = _safe_dest(t.category, f.get("name", ""))
             if os.path.getsize(dest) != int(f.get("size") or 0):
                 return False
-        except OSError:
+        except (OSError, ValueError):
             return False
     return True
 
@@ -363,7 +451,7 @@ async def sync_once() -> None:
             t.save_path = _save_path(t.category)
             store.upsert(t)
             _downloading.add(t.hash)
-            asyncio.create_task(_download_torrent(t.hash))
+            _spawn(_download_torrent(t.hash))
         else:
             if t.state == STATE_QUEUED:
                 t.state = STATE_CLOUD
@@ -371,10 +459,12 @@ async def sync_once() -> None:
 
 
 async def run() -> None:
+    global _last_tick
     log.info("Worker started (poll every %ds)", settings.poll_interval)
     while True:
         try:
             await sync_once()
         except Exception as exc:  # noqa: BLE001
             log.exception("sync loop error: %s", exc)
+        _last_tick = time.time()
         await asyncio.sleep(settings.poll_interval)

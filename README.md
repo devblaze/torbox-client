@@ -182,11 +182,20 @@ TORBOX_API_KEY=... DOWNLOAD_DIR=./dl DATA_DIR=./data \
   uvicorn app.main:app --reload --port 8080
 ```
 
+Run the tests:
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+CI runs the suite on every push and pull request; the Docker image only publishes after tests pass.
+
 Layout:
 
 ```
 app/
-  main.py           FastAPI app + startup wiring
+  main.py           FastAPI app + lifespan wiring, request tracing, /health
   config.py         env-based settings
   qbit_api.py       qBittorrent Web API v2 emulation (talks to Sonarr/Radarr)
   torbox_client.py  async TorBox v1 API client
@@ -194,9 +203,10 @@ app/
   store.py          SQLite state
   bencode.py        infohash computation (magnet + .torrent)
   webui.py          dashboard endpoints (serves /, state/history/logs JSON)
-  logbuffer.py      in-memory ring buffer feeding the Logs tab
+  logbuffer.py      in-memory ring buffer + secret redaction for the Logs tab
   static/index.html the dashboard page (vanilla HTML/JS, no build step)
+tests/                pytest suite (bencode, config, store, worker, qbit_api, logbuffer)
 docker-entrypoint.sh  PUID/PGID privilege drop
 templates/torbox-client.xml  Unraid Community Applications template
-.github/workflows/    builds & publishes the image to GHCR
+.github/workflows/    tests, then builds & publishes the image to GHCR
 ```

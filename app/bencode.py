@@ -13,7 +13,14 @@ from typing import Any, Tuple
 from urllib.parse import parse_qs, urlparse
 
 
-def _decode(data: bytes, index: int) -> Tuple[Any, int]:
+# Guard against a hostile .torrent with deeply nested lists/dicts blowing the
+# Python recursion stack. Real torrents nest only a handful of levels.
+_MAX_DEPTH = 100
+
+
+def _decode(data: bytes, index: int, depth: int = 0) -> Tuple[Any, int]:
+    if depth > _MAX_DEPTH:
+        raise ValueError("bencode nesting too deep")
     ch = data[index:index + 1]
     if ch == b"i":
         end = data.index(b"e", index)
@@ -22,15 +29,15 @@ def _decode(data: bytes, index: int) -> Tuple[Any, int]:
         index += 1
         result = []
         while data[index:index + 1] != b"e":
-            item, index = _decode(data, index)
+            item, index = _decode(data, index, depth + 1)
             result.append(item)
         return result, index + 1
     if ch == b"d":
         index += 1
         result = {}
         while data[index:index + 1] != b"e":
-            key, index = _decode(data, index)
-            value, index = _decode(data, index)
+            key, index = _decode(data, index, depth + 1)
+            value, index = _decode(data, index, depth + 1)
             result[key] = value
         return result, index + 1
     if ch.isdigit():
