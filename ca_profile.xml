@@ -4,7 +4,9 @@
   <Profile>
     I build self-hosting tools for the *arr ecosystem. torbox-client lets you use
     TorBox as a download client for Sonarr and Radarr by emulating qBittorrent,
-    the same way rdt-client does for Real-Debrid.
+    the same way rdt-client does for Real-Debrid. media-box is an all-in-one
+    series and movie PVR — a self-hosted Sonarr + Radarr + request-management
+    replacement with a built-in player.
   </Profile>
   <WebPage>https://github.com/devblaze/torbox-client</WebPage>
 </Maintainer>

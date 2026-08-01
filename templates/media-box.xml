@@ -1,0 +1,45 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>media-box</Name>
+  <Repository>ghcr.io/devblaze/media-box:latest</Repository>
+  <Registry>https://github.com/devblaze/media-box/pkgs/container/media-box</Registry>
+  <Network>bridge</Network>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/devblaze/media-box/issues</Support>
+  <Project>https://github.com/devblaze/media-box</Project>
+  <Overview>
+    All-in-one series and movie PVR: a self-hosted Sonarr + Radarr + request-management replacement.
+    Monitors your libraries, searches Torznab indexers, grabs via qBittorrent or TorBox, imports and
+    renames automatically, and lets your users request media Jellyseerr-style. Migrate your existing
+    Sonarr/Radarr libraries from Settings &gt; Migrate.
+
+    USE WITH CAUTION ON EXISTING MEDIA LIBRARIES: media-box manages files — it can move, rename,
+    upgrade and delete media it imports. If you point it at a library that Sonarr/Radarr or your
+    media server already manage, start safe: set Settings &gt; Media Management &gt; File operations
+    to Read-only (no file changes) or Ask (every change waits for your approval on the File Changes
+    page), and only switch to Allow once you trust what it does.
+
+    PATHS: this template maps three separate shares — Downloads, Movies and TV. If Downloads is on a
+    DIFFERENT filesystem than Movies/TV, imports COPY the file (slower, needs free space). To get
+    instant, space-free hardlink imports, point all three at subfolders of ONE share.
+  </Overview>
+  <Category>MediaApp:Video MediaServer:Video Downloaders:</Category>
+  <WebUI>http://[IP]:[PORT:7878]</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/devblaze/torbox-client/main/templates/media-box.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/devblaze/torbox-client/main/icons/media-box.png</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <DonateText/>
+  <DonateLink/>
+  <Config Name="WebUI Port" Target="7878" Default="7878" Mode="tcp" Description="Web interface port" Type="Port" Display="always" Required="true" Mask="false">7878</Config>
+  <Config Name="Config" Target="/config" Default="/mnt/user/appdata/media-box" Mode="rw" Description="App configuration and SQLite database (persist this)" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/media-box</Config>
+  <Config Name="Downloads" Target="/downloads" Default="/mnt/user/downloads" Mode="rw" Description="Download client output (torrents/usenet). Put on the SAME share as Movies/TV for hardlinks." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/downloads</Config>
+  <Config Name="Movies" Target="/movies" Default="/mnt/user/movies" Mode="rw" Description="Movie library" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/movies</Config>
+  <Config Name="TV" Target="/tv" Default="/mnt/user/tv" Mode="rw" Description="Series (TV) library" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/tv</Config>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User ID for file ownership" Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group ID for file ownership" Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+  <Config Name="UMASK" Target="UMASK" Default="022" Mode="" Description="File creation mask" Type="Variable" Display="advanced" Required="false" Mask="false">022</Config>
+  <Config Name="TZ" Target="TZ" Default="Europe/Athens" Mode="" Description="Timezone (e.g. Europe/Athens)" Type="Variable" Display="advanced" Required="false" Mask="false">Europe/Athens</Config>
+  <Config Name="Intel/AMD GPU" Target="/dev/dri" Default="/dev/dri" Mode="" Description="Pass the iGPU for hardware transcoding (Intel QuickSync / AMD VAAPI). Then set Settings &gt; Transcoding &gt; Hardware acceleration to VAAPI or QSV. Leave unset for CPU transcoding. For NVIDIA, install the Unraid Nvidia-Driver plugin and add Extra Parameters: --runtime=nvidia plus NVIDIA_VISIBLE_DEVICES." Type="Device" Display="advanced" Required="false" Mask="false">/dev/dri</Config>
+</Container>
