@@ -1,14 +1,16 @@
 import asyncio
 import os
 import time
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from app import worker
+from app import runtime, worker
 from app.store import (
     STATE_CLOUD,
     STATE_COMPLETED,
     STATE_DOWNLOADING,
+    STATE_ERROR,
     STATE_QUEUED,
     Torrent,
 )
@@ -81,6 +83,21 @@ async def test_rate_limiter_unlimited_is_instant():
     for _ in range(1000):
         await rl.throttle(1 << 20)
     assert time.monotonic() - start < 0.5
+
+
+async def test_rate_limiter_follows_runtime_setting(monkeypatch):
+    rl = worker._RateLimiter()  # no fixed rate -> reads the runtime setting
+    monkeypatch.setitem(runtime._values, "max_download_speed", 0)
+    start = time.monotonic()
+    for _ in range(100):
+        await rl.throttle(1 << 20)
+    assert time.monotonic() - start < 0.5
+
+    monkeypatch.setitem(runtime._values, "max_download_speed", 10)  # MiB/s
+    start = time.monotonic()
+    for _ in range(20):  # 20 MiB at 10 MiB/s ~ 2s
+        await rl.throttle(1 << 20)
+    assert 1.5 < time.monotonic() - start < 3.5
 
 
 # --------------------------------------------------------------------------- #
@@ -216,6 +233,109 @@ async def test_download_file_real_path_writes_and_counts(worker_env, monkeypatch
     with open(dest, "rb") as fh:
         assert fh.read() == data
     assert progress["done"] == len(data)
+
+
+# --------------------------------------------------------------------------- #
+# housekeeping: timestamp parsing, age cleanup, subscription
+# --------------------------------------------------------------------------- #
+def test_parse_time():
+    assert worker._parse_time("1970-01-01T00:00:10+00:00") == 10
+    assert worker._parse_time("1970-01-01T00:00:10Z") == 10
+    assert worker._parse_time("1970-01-01T00:00:10") == 10  # naive -> UTC
+    assert worker._parse_time(5) == 5.0
+    assert worker._parse_time("garbage") is None
+    assert worker._parse_time("") is None
+    assert worker._parse_time(None) is None
+
+
+def _iso_days_ago(days: float) -> str:
+    return (datetime.now(tz=timezone.utc) - timedelta(days=days)).isoformat()
+
+
+async def test_age_cleanup_removes_old_spares_recent(worker_env, monkeypatch):
+    fake = _FakeClient([
+        {"id": 1, "hash": "c" * 40, "name": "ancient", "created_at": _iso_days_ago(31), "size": 5},
+        {"id": 2, "hash": "d" * 40, "name": "fresh", "created_at": _iso_days_ago(2)},
+        {"id": 3, "hash": "e" * 40, "name": "undated"},  # unparsable age -> spared
+    ])
+    monkeypatch.setattr(worker, "client", fake)
+    monkeypatch.setitem(runtime._values, "cloud_max_age_days", 30)
+    await worker.cleanup_aged_cloud()
+    assert fake.deleted == [(1, "delete")]
+    events = worker_env.history()
+    assert any(e["event"] == "cloud_removed" and e["name"] == "ancient" for e in events)
+
+
+async def test_age_cleanup_disabled_by_default(worker_env, monkeypatch):
+    fake = _FakeClient([{"id": 1, "hash": "c" * 40, "name": "old", "created_at": _iso_days_ago(400)}])
+    monkeypatch.setattr(worker, "client", fake)
+    await worker.cleanup_aged_cloud()  # cloud_max_age_days defaults to 0 = off
+    assert fake.deleted == []
+
+
+async def test_age_cleanup_spares_active_local_pull(worker_env, monkeypatch):
+    h = "a" * 40
+    fake = _FakeClient([{"id": 7, "hash": h, "name": "busy", "created_at": _iso_days_ago(60)}])
+    monkeypatch.setattr(worker, "client", fake)
+    monkeypatch.setitem(runtime._values, "cloud_max_age_days", 30)
+    worker_env.upsert(Torrent(hash=h, name="busy", torbox_id=7, state=STATE_DOWNLOADING))
+    worker._downloading.add(h)
+    await worker.cleanup_aged_cloud()
+    assert fake.deleted == []
+
+
+async def test_age_cleanup_marks_tracked_incomplete_as_error(worker_env, monkeypatch):
+    h = "a" * 40
+    fake = _FakeClient([{"id": 7, "hash": h, "name": "stuck", "created_at": _iso_days_ago(60)}])
+    monkeypatch.setattr(worker, "client", fake)
+    monkeypatch.setitem(runtime._values, "cloud_max_age_days", 30)
+    worker_env.upsert(Torrent(hash=h, name="stuck", torbox_id=7, state=STATE_CLOUD))
+    await worker.cleanup_aged_cloud()
+    assert fake.deleted == [(7, "delete")]
+    t = worker_env.get(h)
+    assert t.state == STATE_ERROR
+    assert t.torbox_id is None
+
+
+async def test_age_cleanup_keeps_tracked_completed_entry(worker_env, monkeypatch):
+    h = "a" * 40
+    fake = _FakeClient([{"id": 7, "hash": h, "name": "done", "created_at": _iso_days_ago(60)}])
+    monkeypatch.setattr(worker, "client", fake)
+    monkeypatch.setitem(runtime._values, "cloud_max_age_days", 30)
+    worker_env.upsert(Torrent(hash=h, name="done", torbox_id=7, state=STATE_COMPLETED))
+    await worker.cleanup_aged_cloud()
+    t = worker_env.get(h)
+    assert t.state == STATE_COMPLETED  # local files / import tracking untouched
+    assert t.torbox_id is None
+
+
+async def test_refresh_subscription_populates_status(worker_env, monkeypatch):
+    expires = datetime.now(tz=timezone.utc) + timedelta(days=5)
+
+    async def fake_me():
+        return {"plan": 2, "premium_expires_at": expires.isoformat()}
+
+    monkeypatch.setattr(worker.client, "user_me", fake_me)
+    notified = []
+
+    async def fake_notify(days_left, expires_at):
+        notified.append(days_left)
+
+    monkeypatch.setattr(worker.notify, "maybe_notify_subscription", fake_notify)
+    await worker.refresh_subscription()
+    sub = worker.subscription_status()
+    assert sub["plan"] == 2
+    assert 4.5 <= sub["days_left"] <= 5.0
+    assert notified and 4.9 < notified[0] <= 5.0
+
+
+async def test_refresh_subscription_survives_api_failure(worker_env, monkeypatch):
+    async def boom():
+        raise RuntimeError("api down")
+
+    monkeypatch.setattr(worker.client, "user_me", boom)
+    await worker.refresh_subscription()
+    assert worker.subscription_status() is None
 
 
 async def test_download_success_completes(worker_env, monkeypatch):

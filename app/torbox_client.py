@@ -52,6 +52,11 @@ class TorBoxClient:
             log.warning("TorBox key validation failed: %s", exc)
             return False
 
+    async def user_me(self) -> dict:
+        """Account info: plan, premium_expires_at, etc."""
+        data = await self._get_json("/api/user/me")
+        return data.get("data") or {}
+
     # --- torrents ---
     async def add_magnet(self, magnet: str, name: Optional[str] = None) -> dict:
         form = {

@@ -86,11 +86,25 @@ class Settings:
     # Hours after a completed local download before the TorBox cloud copy is
     # deleted to free the account's active-torrent slots (0 = never).
     torbox_cleanup_hours: float = _float("TORBOX_CLEANUP_HOURS", 24)
+    # Delete ANY item in the TorBox account older than this many days, tracked
+    # or not (0 = off). Items still being pulled locally are always spared.
+    cloud_max_age_days: float = _float("CLOUD_MAX_AGE_DAYS", 0)
     delete_from_torbox_on_remove: bool = _bool("DELETE_FROM_TORBOX_ON_REMOVE", True)
     # If TorBox seeding is requested (1=auto, 2=always seed, 3=never seed).
     torbox_seed: int = _int("TORBOX_SEED", 1)
     # Allow TorBox to zip download folders (we download per-file, so keep off).
     torbox_allow_zip: bool = _bool("TORBOX_ALLOW_ZIP", False)
+
+    # --- Notifications (defaults; editable at runtime in the web UI) ---
+    # Start warning when the TorBox subscription has this many days left (0 = off).
+    sub_warn_days: int = _int("SUB_WARN_DAYS", 7)
+    # Send a Pushover alert after this many errors inside a 15-minute window
+    # (0 = off). One alert per burst, then an hour of silence — never a spam feed.
+    error_burst_threshold: int = _int("ERROR_BURST_THRESHOLD", 25)
+    pushover_token: str = _str("PUSHOVER_TOKEN", "")
+    pushover_user: str = _str("PUSHOVER_USER", "")
+    # Master switch; only matters once token + user key are set.
+    pushover_enabled: bool = _bool("PUSHOVER_ENABLED", True)
 
     listen_host: str = _str("LISTEN_HOST", "0.0.0.0")
     listen_port: int = _int("LISTEN_PORT", 8080)

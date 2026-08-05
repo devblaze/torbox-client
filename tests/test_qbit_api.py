@@ -114,6 +114,7 @@ def client(monkeypatch):
         return True
 
     monkeypatch.setattr(worker, "run", _noop_run)
+    monkeypatch.setattr(worker, "housekeeping", _noop_run)
     monkeypatch.setattr(worker, "repair_paths", lambda: None)
     monkeypatch.setattr(worker, "resume_interrupted", lambda: None)
     monkeypatch.setattr(tb, "validate_key", _ok)

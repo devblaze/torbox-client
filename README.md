@@ -135,11 +135,17 @@ Search for an episode/movie and hit download. In the *arr **Activity/Queue** you
 
 ## Web UI
 
-Open `http://<host>:8080/` in a browser for a small dashboard. It refreshes automatically every few seconds and has three tabs:
+Open `http://<host>:8080/` in a browser for a small dashboard. It refreshes automatically every few seconds and has four tabs:
 
-- **Activity** — everything currently tracked, with separate progress bars for the cloud phase (TorBox downloading) and the local pull to `/downloads`, plus speeds, sizes and errors.
-- **History** — a persistent event log of what happened: **Added** (sent to TorBox), **Downloaded** (files landed in `/downloads`), **Transferred** (imported and removed by Sonarr/Radarr), and any **Errors**. Kept in SQLite (last 1000 events), so it survives restarts and shows items after the *arr apps delete them.
+- **Activity** — everything currently tracked, with separate progress bars for the cloud phase (TorBox downloading) and the local pull to `/downloads`, plus speeds, sizes and errors. The header also shows how many days are left on your **TorBox subscription** (colored amber inside the warning window, red when ≤ 3 days or expired).
+- **History** — a persistent event log of what happened: **Added** (sent to TorBox), **Downloaded** (files landed in `/downloads`), **Transferred** (imported and removed by Sonarr/Radarr), **Cloud cleaned** (cloud copies removed by cleanup), and any **Errors**. Kept in SQLite (last 1000 events), so it survives restarts and shows items after the *arr apps delete them.
 - **Logs** — a live debug log (filterable by level) capturing the worker, TorBox API calls, and every request Sonarr/Radarr make. In-memory, last 2000 lines; `docker logs` still honours `LOG_LEVEL`.
+- **Settings** — runtime-tunable settings, applied immediately (no restart) and persisted in `/data` (they override the matching environment variables):
+  - **Download speed limit** (MiB/s) — live cap on the aggregate pull speed from TorBox, even mid-download.
+  - **Auto-clear items older than N days** — every 30 minutes, anything in your TorBox account older than the cutoff is deleted (including items you added outside this app); anything still being pulled locally is spared.
+  - **Delete cloud copy after import** (hours) — same as `TORBOX_CLEANUP_HOURS`.
+  - **Subscription warning** — days-before-expiry threshold for the header badge and notifications.
+  - **Pushover notifications** — enter your Pushover app token + user key (pushover.net) and use *Send test notification* to verify. You then get: a subscription-expiry warning (at most **once per day**, high priority when ≤ 2 days), and an **error-burst alert** — one message when a configurable number of errors (default 25) pile up within 15 minutes, followed by an hour of silence. Repeated failed TorBox polls count too, so a dead API key or outage triggers exactly one alert instead of a spam feed — or silence.
 
 Log in with the same `QBIT_USER` / `QBIT_PASS` credentials Sonarr/Radarr use. Sessions are in-memory, so you'll be asked to sign in again after the container restarts.
 
@@ -163,10 +169,17 @@ All configuration is via environment variables (see `.env.example`):
 | `MAX_DOWNLOAD_SPEED` | `0` | Aggregate download cap in MiB/s across all files (0 = unlimited). |
 | `STALL_TIMEOUT` | `90` | Seconds without data before a stalled stream is retried with a fresh link. |
 | `DOWNLOAD_RETRIES` | `4` | Attempts per file; each retry resumes from the bytes already on disk. |
-| `TORBOX_CLEANUP_HOURS` | `24` | Delete the TorBox **cloud** copy this long after the local download completes, freeing your TorBox active-torrent slots (local files kept; 0 = never). |
+| `TORBOX_CLEANUP_HOURS` | `24` | Delete the TorBox **cloud** copy this long after the local download completes, freeing your TorBox active-torrent slots (local files kept; 0 = never). ✏️ |
+| `CLOUD_MAX_AGE_DAYS` | `0` | Delete **any** item in the TorBox account older than this many days, tracked or not (0 = off). Items still being pulled locally are spared. ✏️ |
 | `DELETE_FROM_TORBOX_ON_REMOVE` | `true` | Delete the cloud torrent when *arr removes the download. |
 | `TORBOX_SEED` | `1` | TorBox seeding: 1=auto, 2=always, 3=never. |
+| `SUB_WARN_DAYS` | `7` | Warn when the TorBox subscription has this many days left (0 = off). ✏️ |
+| `ERROR_BURST_THRESHOLD` | `25` | Pushover alert after this many errors within 15 minutes (0 = off). ✏️ |
+| `PUSHOVER_TOKEN` / `PUSHOVER_USER` | — | Pushover application token + user key. ✏️ |
+| `PUSHOVER_ENABLED` | `true` | Master switch for Pushover (only matters once token+user are set). ✏️ |
 | `LOG_LEVEL` | `INFO` | `DEBUG` for verbose logging. |
+
+Variables marked ✏️ are only **defaults**: they can be changed at runtime in the web UI's **Settings** tab, and a value saved there (stored in `/data`) overrides the environment variable from then on.
 
 ## Notes & limitations
 
@@ -196,16 +209,20 @@ Layout:
 ```
 app/
   main.py           FastAPI app + lifespan wiring, request tracing, /health
-  config.py         env-based settings
+  config.py         env-based settings (defaults)
+  runtime.py        runtime-tunable settings (web UI Settings tab, persisted in SQLite)
   qbit_api.py       qBittorrent Web API v2 emulation (talks to Sonarr/Radarr)
   torbox_client.py  async TorBox v1 API client
-  worker.py         poll TorBox + download finished files locally
+  worker.py         poll TorBox + download finished files locally + housekeeping
+                    (subscription status, age-based cloud cleanup)
+  notify.py         Pushover notifications (subscription expiry, error bursts)
   store.py          SQLite state
   bencode.py        infohash computation (magnet + .torrent)
-  webui.py          dashboard endpoints (serves /, state/history/logs JSON)
+  webui.py          dashboard endpoints (serves /, state/history/logs/settings JSON)
   logbuffer.py      in-memory ring buffer + secret redaction for the Logs tab
   static/index.html the dashboard page (vanilla HTML/JS, no build step)
-tests/                pytest suite (bencode, config, store, worker, qbit_api, logbuffer)
+tests/                pytest suite (bencode, config, store, worker, qbit_api, logbuffer,
+                      runtime, notify, webui)
 docker-entrypoint.sh  PUID/PGID privilege drop
 templates/torbox-client.xml  Unraid Community Applications template
 .github/workflows/    tests, then builds & publishes the image to GHCR

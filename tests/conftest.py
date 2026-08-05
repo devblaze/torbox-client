@@ -37,4 +37,5 @@ def worker_env(tmp_path, monkeypatch):
     worker._downloading.clear()
     worker._attempts.clear()
     worker._background_tasks.clear()
+    worker._subscription.clear()
     return st

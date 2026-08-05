@@ -14,7 +14,9 @@ import contextlib
 import logging
 import os
 import time
+from datetime import datetime, timezone
 
+from . import notify, runtime
 from .config import settings
 from .store import (
     STATE_CLOUD,
@@ -53,9 +55,13 @@ def _semaphore() -> asyncio.Semaphore:
 
 
 class _RateLimiter:
-    """Leaky-bucket limiter shared by all file streams (aggregate cap)."""
+    """Leaky-bucket limiter shared by all file streams (aggregate cap).
 
-    def __init__(self, rate_bytes_per_s: float):
+    With no fixed rate it follows the ``max_download_speed`` runtime setting on
+    every call, so a change saved in the web UI applies mid-download.
+    """
+
+    def __init__(self, rate_bytes_per_s: float | None = None):
         self.rate = rate_bytes_per_s
         self._next_free = 0.0
         self._lock: asyncio.Lock | None = None
@@ -69,17 +75,18 @@ class _RateLimiter:
         return self._lock
 
     async def throttle(self, nbytes: int) -> None:
-        if self.rate <= 0:
+        rate = self.rate if self.rate is not None else runtime.get("max_download_speed") * (1 << 20)
+        if rate <= 0:
             return
         async with self._get_lock():
             now = time.monotonic()
-            self._next_free = max(self._next_free, now) + nbytes / self.rate
+            self._next_free = max(self._next_free, now) + nbytes / rate
             wait = self._next_free - now
         if wait > 0:
             await asyncio.sleep(wait)
 
 
-_rate = _RateLimiter(settings.max_download_speed * (1 << 20))
+_rate = _RateLimiter()
 
 # Strong references to detached tasks so the event loop can't GC them mid-flight
 # (asyncio only holds a weak reference to the task returned by create_task).
@@ -384,13 +391,13 @@ async def _cleanup_cloud(t: Torrent) -> None:
     except Exception as exc:  # noqa: BLE001
         log.warning("TorBox cleanup delete failed for %s: %s", t.name, exc)
         return
+    hours = runtime.get("torbox_cleanup_hours")
     t.torbox_id = None
     store.upsert(t)
     store.add_event(t.hash, t.name, t.category, "cloud_removed",
-                    detail=f"cloud copy removed after {settings.torbox_cleanup_hours:g}h "
+                    detail=f"cloud copy removed after {hours:g}h "
                            "(local files kept)", size=t.size)
-    log.info("Removed TorBox cloud copy of %s (completed >%gh ago)",
-             t.name, settings.torbox_cleanup_hours)
+    log.info("Removed TorBox cloud copy of %s (completed >%gh ago)", t.name, hours)
 
 
 def resume_interrupted() -> None:
@@ -416,12 +423,15 @@ async def sync_once() -> None:
         entries = await client.my_list()
     except Exception as exc:  # noqa: BLE001
         log.warning("TorBox mylist failed: %s", exc)
+        # Feed the burst alert directly: a dead API/key only ever logs warnings,
+        # but a stretch of failed polls is exactly what the user wants to hear about.
+        notify.record_error(f"TorBox mylist failed: {exc}")
         return
 
     by_id = {e.get("id"): e for e in entries if e.get("id") is not None}
     by_hash = {str(e.get("hash", "")).lower(): e for e in entries}
     now = int(time.time())
-    cleanup_after = settings.torbox_cleanup_hours * 3600
+    cleanup_after = runtime.get("torbox_cleanup_hours") * 3600
 
     for t in tracked:
         if (t.state == STATE_COMPLETED and cleanup_after > 0 and t.torbox_id is not None
@@ -464,7 +474,108 @@ async def run() -> None:
     while True:
         try:
             await sync_once()
+            await notify.maybe_notify_error_burst()
         except Exception as exc:  # noqa: BLE001
             log.exception("sync loop error: %s", exc)
         _last_tick = time.time()
         await asyncio.sleep(settings.poll_interval)
+
+
+# --------------------------------------------------------------------------- #
+# housekeeping: subscription status + age-based cloud cleanup
+# --------------------------------------------------------------------------- #
+_HOUSEKEEP_INTERVAL = 1800  # seconds between subscription/age-cleanup passes
+
+# Latest snapshot from /user/me; served by the web UI header.
+_subscription: dict = {}
+
+
+def subscription_status() -> dict | None:
+    return dict(_subscription) if _subscription else None
+
+
+def _parse_time(value) -> float | None:
+    """Epoch seconds from a TorBox timestamp (ISO 8601 string or epoch number)."""
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+async def refresh_subscription() -> None:
+    try:
+        me = await client.user_me()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("TorBox user info fetch failed: %s", exc)
+        return
+    expires_raw = str(me.get("premium_expires_at") or "")
+    expires_ts = _parse_time(expires_raw)
+    days_left = (expires_ts - time.time()) / 86400 if expires_ts is not None else None
+    _subscription.clear()
+    _subscription.update({
+        "plan": me.get("plan"),
+        "expires_at": expires_raw or None,
+        "days_left": round(days_left, 1) if days_left is not None else None,
+        "checked_at": int(time.time()),
+    })
+    await notify.maybe_notify_subscription(days_left, expires_raw)
+
+
+async def cleanup_aged_cloud() -> None:
+    """Delete TorBox items older than ``cloud_max_age_days`` — tracked or not —
+    sparing anything whose local pull is still running."""
+    days = runtime.get("cloud_max_age_days")
+    if days <= 0:
+        return
+    try:
+        entries = await client.my_list()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Age cleanup: mylist failed: %s", exc)
+        return
+    cutoff = time.time() - days * 86400
+    for entry in entries:
+        tid = entry.get("id")
+        if tid is None:
+            continue
+        created = _parse_time(entry.get("created_at") or entry.get("added_at") or entry.get("added"))
+        if created is None or created > cutoff:
+            continue
+        hash_ = str(entry.get("hash") or "").lower()
+        t = store.get(hash_) if hash_ else None
+        if t and (t.hash in _downloading or t.state == STATE_DOWNLOADING):
+            continue  # let the local pull finish; the next pass will catch it
+        name = entry.get("name") or (t.name if t else hash_) or str(tid)
+        try:
+            await client.control(tid, "delete")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Age cleanup delete failed for %s: %s", name, exc)
+            continue
+        if t:
+            t.torbox_id = None
+            if t.state != STATE_COMPLETED:
+                t.state = STATE_ERROR
+                t.error = f"removed from TorBox by age cleanup (older than {days:g} days)"
+            store.upsert(t)
+        store.add_event(hash_ or str(tid), name, t.category if t else "", "cloud_removed",
+                        detail=f"age cleanup: older than {days:g} days on TorBox",
+                        size=int(entry.get("size") or 0))
+        log.info("Age cleanup: removed %s from TorBox (older than %gd)", name, days)
+
+
+async def housekeeping() -> None:
+    """Slow loop for work that doesn't belong in the per-poll sync."""
+    log.info("Housekeeping started (every %d min)", _HOUSEKEEP_INTERVAL // 60)
+    while True:
+        try:
+            await refresh_subscription()
+            await cleanup_aged_cloud()
+        except Exception as exc:  # noqa: BLE001
+            log.exception("housekeeping error: %s", exc)
+        await asyncio.sleep(_HOUSEKEEP_INTERVAL)

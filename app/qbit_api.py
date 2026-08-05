@@ -21,7 +21,7 @@ import httpx
 from fastapi import APIRouter, Cookie, Depends, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from . import bencode, worker
+from . import bencode, runtime, worker
 from .config import settings
 from .store import (
     STATE_CLOUD,
@@ -171,7 +171,8 @@ async def transfer_info() -> Response:
     return JSONResponse({
         "dl_info_speed": dl, "dl_info_data": 0,
         "up_info_speed": 0, "up_info_data": 0,
-        "dl_rate_limit": 0, "up_rate_limit": 0,
+        "dl_rate_limit": int(runtime.get("max_download_speed") * (1 << 20)),
+        "up_rate_limit": 0,
         "dht_nodes": 0, "connection_status": "connected",
     })
 

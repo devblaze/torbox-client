@@ -14,16 +14,16 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from . import logbuffer, worker
+from . import logbuffer, notify, worker
 from .config import settings
 from .qbit_api import api, public, require_auth
 from .torbox_client import client
 from .webui import ui_api, ui_public
 
 # Root at DEBUG so the web UI's log buffer sees everything; the console handler
-# keeps honouring LOG_LEVEL so `docker logs` stays as quiet as before. Both
-# handlers get a redaction filter so the TorBox key can never reach the console
-# or the HTTP-exposed log buffer.
+# keeps honouring LOG_LEVEL so `docker logs` stays as quiet as before. Every
+# handler gets a redaction filter so the TorBox key can never reach the console,
+# the HTTP-exposed log buffer, or an outgoing Pushover message.
 _redact = logbuffer.RedactSecrets(settings.torbox_api_key)
 _console = logging.StreamHandler()
 _console.setLevel(getattr(logging, settings.log_level, logging.INFO))
@@ -31,7 +31,9 @@ _console.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(
 _console.addFilter(_redact)
 _buffer = logbuffer.handler()
 _buffer.addFilter(_redact)
-logging.basicConfig(level=logging.DEBUG, handlers=[_console, _buffer])
+_errcount = notify.handler()  # ERROR records feed the Pushover burst alert
+_errcount.addFilter(_redact)
+logging.basicConfig(level=logging.DEBUG, handlers=[_console, _buffer, _errcount])
 logging.getLogger("httpcore").setLevel(logging.INFO)  # per-chunk DEBUG spam
 logging.getLogger("python_multipart").setLevel(logging.INFO)  # per-form-field DEBUG spam
 log = logging.getLogger("main")
@@ -63,12 +65,16 @@ async def lifespan(app: FastAPI):
     worker.repair_paths()
     worker.resume_interrupted()
     worker_task = asyncio.create_task(worker.run())
+    housekeeping_task = asyncio.create_task(worker.housekeeping())
     try:
         yield
     finally:
         worker_task.cancel()
+        housekeeping_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await worker_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await housekeeping_task
         await worker.shutdown()  # unwind live downloads before closing the client
         await client.close()
 

@@ -85,6 +85,28 @@
   .ll.INFO { color: var(--text); }
   .ll.WARNING { color: var(--warn); }
   .ll.ERROR, .ll.CRITICAL { color: var(--err); }
+  /* subscription chip */
+  .stats .sub.warn b { color: var(--warn); }
+  .stats .sub.err b { color: var(--err); }
+  /* settings */
+  #tab-settings h3 { margin: 2px 0 14px; font-size: 14px; }
+  .field { margin-bottom: 16px; }
+  .field label { display: block; font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+  .field input[type=text], .field input[type=number], .field input[type=password] {
+    width: 100%; max-width: 340px; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--panel2); color: var(--text); font: inherit;
+  }
+  .field .hint { color: var(--muted); font-size: 12px; margin: 4px 0 0; max-width: 560px; }
+  .check { display: flex; gap: 8px; align-items: center; font-weight: 600; font-size: 13px; cursor: pointer; }
+  .btnrow { display: flex; gap: 10px; align-items: center; margin-top: 4px; flex-wrap: wrap; }
+  .btn {
+    padding: 8px 18px; border: 0; border-radius: 8px; background: var(--accent);
+    color: #fff; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  .btn.ghost { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
+  #s_status { font-size: 13px; }
+  #s_status.ok { color: var(--ok); }
+  #s_status.bad { color: var(--err); }
   /* login */
   #login {
     display: none; max-width: 320px; margin: 12vh auto 0; background: var(--panel);
@@ -113,6 +135,7 @@
       <button data-tab="activity" class="active">Activity</button>
       <button data-tab="history">History</button>
       <button data-tab="logs">Logs</button>
+      <button data-tab="settings">Settings</button>
     </nav>
     <div class="stats" id="stats"></div>
   </header>
@@ -132,6 +155,61 @@
         <span style="margin-left:auto">in-memory since last restart</span>
       </div>
       <div id="logbox"></div>
+    </div>
+    <div id="tab-settings" class="hidden">
+      <form id="sform">
+        <div class="card">
+          <h3>Downloads</h3>
+          <div class="field">
+            <label for="s_speed">Download speed limit (MiB/s)</label>
+            <input id="s_speed" type="number" min="0" step="0.1">
+            <p class="hint">Aggregate cap across all files pulled from TorBox. 0 = unlimited. Applies immediately, even to downloads already running.</p>
+          </div>
+          <h3>TorBox cloud cleanup</h3>
+          <div class="field">
+            <label for="s_max_age">Auto-clear items older than (days)</label>
+            <input id="s_max_age" type="number" min="0" step="1">
+            <p class="hint">Deletes anything in your TorBox account older than this — including items not added through this app. Items still being pulled locally are spared. 0 = off. Checked every 30 minutes.</p>
+          </div>
+          <div class="field">
+            <label for="s_cleanup_hours">Delete cloud copy after import (hours)</label>
+            <input id="s_cleanup_hours" type="number" min="0" step="1">
+            <p class="hint">How long after a finished local download the TorBox cloud copy is removed (frees your active-torrent slots; local files are kept). 0 = never.</p>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Notifications</h3>
+          <div class="field">
+            <label for="s_warn_days">Subscription warning (days before expiry)</label>
+            <input id="s_warn_days" type="number" min="0" step="1">
+            <p class="hint">Warn (dashboard + Pushover, once per day) when your TorBox subscription has this many days left. 0 = off.</p>
+          </div>
+          <div class="field">
+            <label for="s_burst">Error burst alert (errors per 15 min)</label>
+            <input id="s_burst" type="number" min="0" step="1">
+            <p class="hint">Send one Pushover alert when this many errors pile up within 15 minutes, then stay quiet for an hour. 0 = off.</p>
+          </div>
+          <div class="field">
+            <label class="check"><input id="s_po_enabled" type="checkbox"> Enable Pushover notifications</label>
+          </div>
+          <div class="field">
+            <label for="s_po_token">Pushover app token</label>
+            <input id="s_po_token" type="text" autocomplete="off" placeholder="a1b2…">
+            <p class="hint">Create an application at pushover.net → “Your Applications” and paste its API token.</p>
+          </div>
+          <div class="field">
+            <label for="s_po_user">Pushover user key</label>
+            <input id="s_po_user" type="text" autocomplete="off" placeholder="u3c4…">
+            <p class="hint">Your user key from the pushover.net dashboard.</p>
+          </div>
+          <div class="btnrow">
+            <button type="submit" class="btn">Save</button>
+            <button type="button" class="btn ghost" id="s_test">Send test notification</button>
+            <span id="s_status"></span>
+          </div>
+          <p class="hint" style="margin-top:12px">Values saved here are stored in <code>/data</code> and override the container's environment variables.</p>
+        </div>
+      </form>
     </div>
   </main>
 </div>
@@ -203,9 +281,18 @@ function card(t) {
   </div>`;
 }
 
+function subChip(sub) {
+  if (!sub || sub.days_left == null) return "";
+  const d = sub.days_left;
+  const cls = d <= 3 ? "err" : (sub.warn_days > 0 && d <= sub.warn_days ? "warn" : "");
+  const label = d <= 0 ? "expired" : (d < 1 ? "&lt;1d left" : `${Math.floor(d)}d left`);
+  return `<span class="sub ${cls}" title="TorBox subscription expires ${esc(sub.expires_at || "?")}">Sub: <b>${label}</b></span>`;
+}
+
 function renderActivity(data) {
   const s = data.summary;
   $("stats").innerHTML =
+    subChip(data.subscription) +
     `<span><b>${s.active}</b> active</span>` +
     `<span><b>${s.completed}</b> completed</span>` +
     (s.errored ? `<span style="color:var(--err)"><b>${s.errored}</b> error${s.errored === 1 ? "" : "s"}</span>` : "") +
@@ -252,8 +339,70 @@ function renderLogs(data) {
   if (stick) box.scrollTop = box.scrollHeight;
 }
 
+/* ---------------- settings ---------------- */
+function setStatus(msg, ok) {
+  const el = $("s_status");
+  el.textContent = msg;
+  el.className = ok ? "ok" : "bad";
+}
+
+async function loadSettings() {
+  let resp;
+  try { resp = await fetch("/ui/api/settings"); } catch { return; }
+  if (resp.status === 403) { showLogin(); return; }
+  if (!resp.ok) return;
+  const s = (await resp.json()).settings;
+  $("s_speed").value = s.max_download_speed;
+  $("s_max_age").value = s.cloud_max_age_days;
+  $("s_cleanup_hours").value = s.torbox_cleanup_hours;
+  $("s_warn_days").value = s.sub_warn_days;
+  $("s_burst").value = s.error_burst_threshold;
+  $("s_po_enabled").checked = s.pushover_enabled;
+  $("s_po_token").value = s.pushover_token;
+  $("s_po_user").value = s.pushover_user;
+  setStatus("", true);
+}
+
+$("sform").addEventListener("submit", async e => {
+  e.preventDefault();
+  const body = {
+    max_download_speed: parseFloat($("s_speed").value || "0"),
+    cloud_max_age_days: parseFloat($("s_max_age").value || "0"),
+    torbox_cleanup_hours: parseFloat($("s_cleanup_hours").value || "0"),
+    sub_warn_days: parseInt($("s_warn_days").value || "0", 10),
+    error_burst_threshold: parseInt($("s_burst").value || "0", 10),
+    pushover_enabled: $("s_po_enabled").checked,
+    pushover_token: $("s_po_token").value.trim(),
+    pushover_user: $("s_po_user").value.trim(),
+  };
+  let resp;
+  try {
+    resp = await fetch("/ui/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch { setStatus("Save failed — network error.", false); return; }
+  if (resp.status === 403) { showLogin(); return; }
+  const data = await resp.json().catch(() => ({}));
+  if (resp.ok) setStatus("Saved — changes apply immediately.", true);
+  else setStatus(data.error || "Save failed.", false);
+});
+
+$("s_test").addEventListener("click", async () => {
+  setStatus("Sending test notification…", true);
+  let resp;
+  try { resp = await fetch("/ui/api/notify-test", { method: "POST" }); }
+  catch { setStatus("Test failed — network error.", false); return; }
+  if (resp.status === 403) { showLogin(); return; }
+  const data = await resp.json().catch(() => ({}));
+  if (data.ok) setStatus("Test notification sent — check your device.", true);
+  else setStatus("Test failed: " + (data.detail || "unknown error"), false);
+});
+
 /* ---------------- plumbing ---------------- */
 async function refresh() {
+  if (tab === "settings") return; // never clobber a form being edited
   let resp;
   const url = tab === "history" ? "/ui/api/history"
     : tab === "logs" ? `/ui/api/logs?level=${$("loglevel").value}`
@@ -272,8 +421,9 @@ async function refresh() {
 document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => {
   tab = b.dataset.tab;
   document.querySelectorAll("nav button").forEach(x => x.classList.toggle("active", x === b));
-  ["activity", "history", "logs"].forEach(t => $("tab-" + t).classList.toggle("hidden", t !== tab));
-  refresh();
+  ["activity", "history", "logs", "settings"].forEach(t => $("tab-" + t).classList.toggle("hidden", t !== tab));
+  if (tab === "settings") loadSettings();
+  else refresh();
 }));
 $("loglevel").addEventListener("change", refresh);
 

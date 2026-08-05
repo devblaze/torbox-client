@@ -114,6 +114,10 @@ class Store:
                     name TEXT PRIMARY KEY,
                     save_path TEXT
                 );
+                CREATE TABLE IF NOT EXISTS kv (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                );
                 CREATE TABLE IF NOT EXISTS history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     ts INTEGER,
@@ -204,6 +208,28 @@ class Store:
         with _lock:
             rows = self._conn.execute("SELECT name, save_path FROM categories").fetchall()
         return {r["name"]: r["save_path"] or "" for r in rows}
+
+    # --- generic key/value (runtime settings overrides, notification state) ---
+    def set_kv(self, key: str, value: str) -> None:
+        with _lock:
+            self._conn.execute(
+                "INSERT INTO kv (key, value) VALUES (?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, value),
+            )
+            self._conn.commit()
+
+    def get_kv(self, key: str) -> Optional[str]:
+        with _lock:
+            row = self._conn.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def kv_prefix(self, prefix: str) -> dict[str, str]:
+        with _lock:
+            rows = self._conn.execute(
+                "SELECT key, value FROM kv WHERE key LIKE ?", (prefix + "%",)
+            ).fetchall()
+        return {r["key"]: r["value"] for r in rows}
 
     # --- history (survives torrent deletion, powers the web UI) ---
     _HISTORY_LIMIT = 1000
