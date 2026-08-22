@@ -138,12 +138,15 @@ Search for an episode/movie and hit download. In the *arr **Activity/Queue** you
 Open `http://<host>:8080/` in a browser for a small dashboard. It refreshes automatically every few seconds and has four tabs:
 
 - **Activity** — everything currently tracked, with separate progress bars for the cloud phase (TorBox downloading) and the local pull to `/downloads`, plus speeds, sizes and errors. The header also shows how many days are left on your **TorBox subscription** (colored amber inside the warning window, red when ≤ 3 days or expired).
-- **History** — a persistent event log of what happened: **Added** (sent to TorBox), **Downloaded** (files landed in `/downloads`), **Transferred** (imported and removed by Sonarr/Radarr), **Cloud cleaned** (cloud copies removed by cleanup), and any **Errors**. Kept in SQLite (last 1000 events), so it survives restarts and shows items after the *arr apps delete them.
+- **History** — a persistent event log of what happened: **Added** (sent to TorBox), **Downloaded** (files landed in `/downloads`), **Transferred** (imported and removed by Sonarr/Radarr), **Cloud cleaned** (cloud copies removed by cleanup), and any **Errors**. Kept in SQLite (`HISTORY_RETENTION` events, 1000 by default), so it survives restarts and shows items after the *arr apps delete them.
+
+  Both list tabs have a toolbar with **search**, **filters**, **sorting** and **paging**. Activity searches name or infohash and filters by state and category; History searches name, detail or infohash and filters by event kind, category and age (last 24h / 7d / 30d / 90d). Matches are highlighted, and your choices are remembered per browser. History paging and search run in SQL, so a search covers the whole retained log rather than just the page on screen.
 - **Logs** — a live debug log (filterable by level) capturing the worker, TorBox API calls, and every request Sonarr/Radarr make. In-memory, last 2000 lines; `docker logs` still honours `LOG_LEVEL`.
 - **Settings** — runtime-tunable settings, applied immediately (no restart) and persisted in `/data` (they override the matching environment variables):
   - **Download speed limit** (MiB/s) — live cap on the aggregate pull speed from TorBox, even mid-download.
   - **Auto-clear items older than N days** — every 30 minutes, anything in your TorBox account older than the cutoff is deleted (including items you added outside this app); anything still being pulled locally is spared.
   - **Delete cloud copy after import** (hours) — same as `TORBOX_CLEANUP_HOURS`.
+  - **History retention** (events) — how many History-tab events to keep; lowering it prunes straight away.
   - **Subscription warning** — days-before-expiry threshold for the header badge and notifications.
   - **Pushover notifications** — enter your Pushover app token + user key (pushover.net) and use *Send test notification* to verify. You then get: a subscription-expiry warning (at most **once per day**, high priority when ≤ 2 days), and an **error-burst alert** — one message when a configurable number of errors (default 25) pile up within 15 minutes, followed by an hour of silence. Repeated failed TorBox polls count too, so a dead API key or outage triggers exactly one alert instead of a spam feed — or silence.
 
@@ -173,6 +176,7 @@ All configuration is via environment variables (see `.env.example`):
 | `CLOUD_MAX_AGE_DAYS` | `0` | Delete **any** item in the TorBox account older than this many days, tracked or not (0 = off). Items still being pulled locally are spared. ✏️ |
 | `DELETE_FROM_TORBOX_ON_REMOVE` | `true` | Delete the cloud torrent when *arr removes the download. |
 | `TORBOX_SEED` | `1` | TorBox seeding: 1=auto, 2=always, 3=never. |
+| `HISTORY_RETENTION` | `1000` | Events kept for the web UI's **History** tab before the oldest are pruned (~150 bytes each, so 10000 ≈ 1.5 MB). ✏️ |
 | `SUB_WARN_DAYS` | `7` | Warn when the TorBox subscription has this many days left (0 = off). ✏️ |
 | `ERROR_BURST_THRESHOLD` | `25` | Pushover alert after this many errors within 15 minutes (0 = off). ✏️ |
 | `PUSHOVER_TOKEN` / `PUSHOVER_USER` | — | Pushover application token + user key. ✏️ |

@@ -62,10 +62,44 @@
   .pct { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
   .error-msg { margin-top: 8px; color: var(--err); font-size: 13px; word-break: break-all; }
   .empty { text-align: center; color: var(--muted); padding: 60px 0; }
+  /* toolbar: search + filters + sort, shared by Activity and History */
+  .toolbar {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 12px; margin-bottom: 10px;
+  }
+  .toolbar input[type=search], .toolbar select {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 6px 9px; font: inherit;
+  }
+  .toolbar input[type=search] { flex: 1 1 200px; min-width: 150px; }
+  .toolbar input[type=search]::placeholder { color: var(--muted); }
+  .toolbar select { max-width: 200px; }
+  .iconbtn {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 6px 10px; font: inherit; cursor: pointer; line-height: 1.45;
+  }
+  .iconbtn:hover { border-color: var(--accent); }
+  .pagerbar {
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    color: var(--muted); font-size: 12px; margin: 0 2px 10px;
+  }
+  .pager { display: flex; gap: 4px; align-items: center; margin-left: auto; }
+  .pager button {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 7px; min-width: 30px; padding: 3px 8px; font: inherit; cursor: pointer;
+  }
+  .pager button:hover:not([disabled]) { border-color: var(--accent); }
+  .pager button[disabled] { opacity: .3; cursor: default; }
+  .pager .page { padding: 0 6px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  mark { background: rgba(79,156,249,.3); color: inherit; border-radius: 3px; padding: 0 1px; }
   /* history */
   .hist { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; padding: 9px 14px; }
   .hist .when { color: var(--muted); font-size: 12px; min-width: 132px; font-variant-numeric: tabular-nums; }
   .hist .detail { color: var(--muted); font-size: 12px; }
+  .hist .detail.long {
+    max-width: 42ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
   /* logs */
   .logbar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; color: var(--muted); font-size: 13px; }
   .logbar select {
@@ -140,8 +174,69 @@
     <div class="stats" id="stats"></div>
   </header>
   <main>
-    <div id="tab-activity"></div>
-    <div id="tab-history" class="hidden"></div>
+    <div id="tab-activity">
+      <div class="toolbar">
+        <input id="a_q" type="search" placeholder="Search name or hash…" autocomplete="off">
+        <select id="a_state" title="Filter by state">
+          <option value="">All states</option>
+          <option value="~active">Active (queued · cloud · pulling)</option>
+          <option value="queued">Queued</option>
+          <option value="cloud">Cloud DL</option>
+          <option value="downloading">Pulling local</option>
+          <option value="completed">Completed</option>
+          <option value="error">Error</option>
+        </select>
+        <select id="a_cat" title="Filter by category"><option value="">All categories</option></select>
+        <select id="a_sort" title="Sort by">
+          <option value="added_on">Added</option>
+          <option value="completion_on">Completed</option>
+          <option value="name">Name</option>
+          <option value="size">Size</option>
+          <option value="progress">Progress</option>
+          <option value="dlspeed">Speed</option>
+        </select>
+        <button type="button" class="iconbtn" id="a_order">↓</button>
+        <select id="a_size" title="Rows per page">
+          <option value="25">25 / page</option>
+          <option value="50">50 / page</option>
+          <option value="100">100 / page</option>
+          <option value="0">Show all</option>
+        </select>
+        <button type="button" class="iconbtn" id="a_clear" title="Reset search, filters and sort">Clear</button>
+      </div>
+      <div class="pagerbar"><span id="a_count"></span><span class="pager" id="a_pager"></span></div>
+      <div id="actlist"></div>
+    </div>
+    <div id="tab-history" class="hidden">
+      <div class="toolbar">
+        <input id="h_q" type="search" placeholder="Search name, detail or hash…" autocomplete="off">
+        <select id="h_event" title="Filter by event"><option value="">All events</option></select>
+        <select id="h_cat" title="Filter by category"><option value="">All categories</option></select>
+        <select id="h_range" title="Filter by age">
+          <option value="0">Any time</option>
+          <option value="86400">Last 24 hours</option>
+          <option value="604800">Last 7 days</option>
+          <option value="2592000">Last 30 days</option>
+          <option value="7776000">Last 90 days</option>
+        </select>
+        <select id="h_sort" title="Sort by">
+          <option value="ts">Time</option>
+          <option value="name">Name</option>
+          <option value="size">Size</option>
+          <option value="event">Event</option>
+        </select>
+        <button type="button" class="iconbtn" id="h_order">↓</button>
+        <select id="h_size" title="Rows per page">
+          <option value="25">25 / page</option>
+          <option value="50">50 / page</option>
+          <option value="100">100 / page</option>
+          <option value="200">200 / page</option>
+        </select>
+        <button type="button" class="iconbtn" id="h_clear" title="Reset search, filters and sort">Clear</button>
+      </div>
+      <div class="pagerbar"><span id="h_count"></span><span class="pager" id="h_pager"></span></div>
+      <div id="histlist"></div>
+    </div>
     <div id="tab-logs" class="hidden">
       <div class="logbar">
         Level:
@@ -176,6 +271,14 @@
             <label for="s_cleanup_hours">Delete cloud copy after import (hours)</label>
             <input id="s_cleanup_hours" type="number" min="0" step="1">
             <p class="hint">How long after a finished local download the TorBox cloud copy is removed (frees your active-torrent slots; local files are kept). 0 = never.</p>
+          </div>
+        </div>
+        <div class="card">
+          <h3>History</h3>
+          <div class="field">
+            <label for="s_history">History retention (events)</label>
+            <input id="s_history" type="number" min="100" step="100">
+            <p class="hint">How many events the History tab keeps before the oldest are pruned. Roughly 150 bytes each, so 10000 events ≈ 1.5 MB in <code>/data</code>. Lowering this prunes immediately.</p>
           </div>
         </div>
         <div class="card">
@@ -243,11 +346,128 @@ function esc(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+/* ---------------- shared toolbar plumbing ---------------- */
+// A category filter needs a value meaning "no category at all"; the empty
+// string already means "no filter" in a <select> and in a query string.
+const NO_CAT = "__none__";
+const PREFS_KEY = "torbox-ui-prefs";
+
+// Toolbar state per tab. Persisted (except the page number) so a reload drops
+// you back into the same view.
+const A = { q: "", state: "", cat: "", sort: "added_on", order: "desc", size: 25, page: 0 };
+const H = { q: "", event: "", cat: "", range: 0, sort: "ts", order: "desc", size: 25, page: 0 };
+
+const toInt = v => parseInt(v, 10) || 0;
+
+function loadPrefs() {
+  let saved;
+  try { saved = JSON.parse(localStorage.getItem(PREFS_KEY) || "{}"); } catch { return; }
+  for (const [st, part] of [[A, saved.activity], [H, saved.history]]) {
+    if (!part) continue;
+    // Only known keys, and only if the type still matches — a stale or
+    // hand-edited blob must not be able to put junk into a query string.
+    for (const k of Object.keys(st)) {
+      if (k !== "page" && typeof part[k] === typeof st[k]) st[k] = part[k];
+    }
+  }
+}
+function savePrefs() {
+  try { localStorage.setItem(PREFS_KEY, JSON.stringify({ activity: A, history: H })); } catch {}
+}
+
+// Select a value, falling back when it is not one of the options — which is
+// what a preference restored from an older version looks like.
+function pick(el, value, fallback) {
+  el.value = String(value);
+  if (el.selectedIndex < 0) el.value = String(fallback);
+  return el.value;
+}
+
+function paintOrder(id, st) {
+  const asc = st.order === "asc";
+  const el = $(id);
+  el.textContent = asc ? "↑" : "↓";
+  el.title = asc ? "Ascending — click for descending"
+                 : "Descending — click for ascending";
+}
+
+// Push toolbar state into the controls, after restoring prefs or a Clear.
+function syncControls() {
+  $("a_q").value = A.q;
+  A.state = pick($("a_state"), A.state, "");
+  A.sort = pick($("a_sort"), A.sort, "added_on");
+  A.size = toInt(pick($("a_size"), A.size, 25));
+  if (A.order !== "asc") A.order = "desc";
+  paintOrder("a_order", A);
+
+  $("h_q").value = H.q;
+  H.range = toInt(pick($("h_range"), H.range, 0));
+  H.sort = pick($("h_sort"), H.sort, "ts");
+  H.size = toInt(pick($("h_size"), H.size, 25));
+  if (H.order !== "asc") H.order = "desc";
+  paintOrder("h_order", H);
+  // a_cat / h_cat / h_event are built from live data by syncOptions().
+}
+
+// Rebuild a data-driven <select> only when its option set actually changed:
+// rewriting it on every 3s poll would close it while the user is choosing.
+function syncOptions(sel, values, allLabel, st, key, label) {
+  const sig = values.join(" ");
+  if (sel.dataset.sig !== sig) {
+    sel.dataset.sig = sig;
+    sel.innerHTML = `<option value="">${allLabel}</option>` +
+      values.map(v => `<option value="${esc(v)}">${esc(label(v))}</option>`).join("");
+  }
+  // A filter whose value has disappeared from the data falls back to "all".
+  if (st[key] && !values.includes(st[key])) { st[key] = ""; st.page = 0; savePrefs(); }
+  sel.value = st[key];
+}
+
+function pageCount(st, total) {
+  return st.size ? Math.max(1, Math.ceil(total / st.size)) : 1;
+}
+
+function renderPager(el, st, total) {
+  const pages = pageCount(st, total);
+  if (pages < 2) { el.innerHTML = ""; return; }
+  const first = st.page <= 0, last = st.page >= pages - 1;
+  const b = (label, page, disabled, title) =>
+    `<button type="button" data-page="${page}" title="${title}"` +
+    `${disabled ? " disabled" : ""}>${label}</button>`;
+  el.innerHTML =
+    b("«", 0, first, "First page") +
+    b("‹", st.page - 1, first, "Previous page") +
+    `<span class="page">${st.page + 1} / ${pages}</span>` +
+    b("›", st.page + 1, last, "Next page") +
+    b("»", pages - 1, last, "Last page");
+}
+
+function countLabel(matched, total, start, shown, noun) {
+  if (!matched) return `No ${noun}s`;
+  const range = shown < matched ? `${start + 1}–${start + shown} of ` : "";
+  const filtered = matched < total ? ` (filtered from ${total})` : "";
+  return `Showing ${range}${matched} ${noun}${matched === 1 ? "" : "s"}${filtered}`;
+}
+
+function reEsc(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+
+// Highlight search hits. The text is escaped first, so the only markup this can
+// ever add is our own <mark>; a query containing HTML-special characters skips
+// highlighting rather than risk matching halfway into an entity.
+function hl(text, q) {
+  const out = esc(text);
+  q = String(q || "").trim();
+  if (!q || /[&<>"']/.test(q)) return out;
+  return out.replace(new RegExp(reEsc(q), "gi"), m => `<mark>${m}</mark>`);
+}
+
 /* ---------------- Activity ---------------- */
 const STATE_LABEL = {
   queued: "Queued", cloud: "Cloud DL", downloading: "Pulling local",
   completed: "Completed", error: "Error",
 };
+const ACTIVE_STATES = ["queued", "cloud", "downloading"];
+let lastState = null;  // last /ui/api/state payload, re-filtered without refetching
 
 function bar(kind, value) {
   const pct = Math.round(value * 100);
@@ -266,8 +486,8 @@ function card(t) {
   }
   return `<div class="card">
     <div class="row-top">
-      <span class="badge ${state}">${STATE_LABEL[t.state] || t.state}</span>
-      <span class="name">${esc(t.name)}</span>
+      <span class="badge ${state}">${STATE_LABEL[t.state] || esc(t.state)}</span>
+      <span class="name">${hl(t.name, A.q)}</span>
       ${t.category ? `<span class="cat">${esc(t.category)}</span>` : ""}
     </div>
     ${phases ? `<div class="phases">${phases}</div>` : ""}
@@ -290,7 +510,28 @@ function subChip(sub) {
   return `<span class="sub ${cls}" title="TorBox subscription expires ${esc(sub.expires_at || "?")}">Sub: <b>${label}</b></span>`;
 }
 
+function activityMatches(t) {
+  if (A.state === "~active" ? !ACTIVE_STATES.includes(t.state)
+                            : A.state && t.state !== A.state) return false;
+  if (A.cat && (t.category || NO_CAT) !== A.cat) return false;
+  const q = A.q.trim().toLowerCase();
+  if (q && !t.name.toLowerCase().includes(q) && !t.hash.toLowerCase().includes(q)) return false;
+  return true;
+}
+
+function sortActivity(items) {
+  const dir = A.order === "asc" ? 1 : -1;
+  return items.sort((x, y) => {
+    const c = A.sort === "name"
+      ? x.name.localeCompare(y.name, undefined, { sensitivity: "base", numeric: true })
+      : (x[A.sort] || 0) - (y[A.sort] || 0);
+    // Ties keep a stable newest-first order instead of reshuffling every poll.
+    return c ? c * dir : y.added_on - x.added_on;
+  });
+}
+
 function renderActivity(data) {
+  lastState = data;
   const s = data.summary;
   $("stats").innerHTML =
     subChip(data.subscription) +
@@ -298,9 +539,26 @@ function renderActivity(data) {
     `<span><b>${s.completed}</b> completed</span>` +
     (s.errored ? `<span style="color:var(--err)"><b>${s.errored}</b> error${s.errored === 1 ? "" : "s"}</span>` : "") +
     `<span>⬇ <b>${fmtSpeed(s.dlspeed)}</b></span>`;
-  $("tab-activity").innerHTML = data.torrents.length
-    ? data.torrents.map(card).join("")
-    : `<div class="empty">Nothing tracked right now. Grab something in Sonarr/Radarr and it will show up here.</div>`;
+
+  const cats = [...new Set(data.torrents.map(t => t.category || NO_CAT))].sort();
+  syncOptions($("a_cat"), cats, "All categories", A, "cat",
+              v => v === NO_CAT ? "Uncategorised" : v);
+
+  const rows = sortActivity(data.torrents.filter(activityMatches));
+  const pages = pageCount(A, rows.length);
+  if (A.page >= pages) A.page = pages - 1;
+  if (A.page < 0) A.page = 0;
+  const start = A.size ? A.page * A.size : 0;
+  const page = A.size ? rows.slice(start, start + A.size) : rows;
+
+  $("a_count").textContent =
+    countLabel(rows.length, data.torrents.length, start, page.length, "torrent");
+  renderPager($("a_pager"), A, rows.length);
+  $("actlist").innerHTML = page.length
+    ? page.map(card).join("")
+    : `<div class="empty">${data.torrents.length
+        ? "No torrents match these filters."
+        : "Nothing tracked right now. Grab something in Sonarr/Radarr and it will show up here."}</div>`;
 }
 
 /* ---------------- History ---------------- */
@@ -309,22 +567,126 @@ const EVENT_LABEL = {
   abandoned: "Removed", error: "Error", cloud_removed: "Cloud cleaned",
 };
 
+function histFiltersActive() {
+  return !!(H.q.trim() || H.event || H.cat || H.range);
+}
+
+// History is paged in SQL, so the filters travel to the server: a search then
+// covers the whole retained history, not just the rows already fetched.
+function historyURL() {
+  const p = new URLSearchParams({
+    limit: String(H.size), offset: String(H.size * H.page),
+    sort: H.sort, order: H.order,
+  });
+  const q = H.q.trim();
+  if (q) p.set("q", q);
+  if (H.event) p.set("events", H.event);
+  if (H.cat) p.set("categories", H.cat);
+  if (H.range) p.set("since", String(Math.floor(Date.now() / 1000) - H.range));
+  return "/ui/api/history?" + p.toString();
+}
+
 function histRow(e) {
+  const detail = e.detail || "";
   return `<div class="card hist">
     <span class="when">${fmtTime(e.ts)}</span>
-    <span class="badge ${esc(e.event)}">${EVENT_LABEL[e.event] || e.event}</span>
-    <span class="name">${esc(e.name)}</span>
+    <span class="badge ${esc(e.event)}">${esc(EVENT_LABEL[e.event] || e.event)}</span>
+    <span class="name">${hl(e.name, H.q)}</span>
     ${e.category ? `<span class="cat">${esc(e.category)}</span>` : ""}
     ${e.size ? `<span class="detail">${fmtBytes(e.size)}</span>` : ""}
-    ${e.detail ? `<span class="detail">${esc(e.detail)}</span>` : ""}
+    ${detail ? `<span class="detail long" title="${esc(detail)}">${hl(detail, H.q)}</span>` : ""}
   </div>`;
 }
 
 function renderHistory(data) {
-  $("tab-history").innerHTML = data.events.length
+  syncOptions($("h_event"), data.facets.events, "All events", H, "event",
+              v => EVENT_LABEL[v] || v);
+  syncOptions($("h_cat"), data.facets.categories.map(c => c || NO_CAT),
+              "All categories", H, "cat", v => v === NO_CAT ? "Uncategorised" : v);
+
+  // Pruning or a narrowed filter can leave us past the last page; step back and
+  // refetch rather than showing an empty list until the next poll.
+  const pages = pageCount(H, data.total);
+  if (H.page >= pages) { H.page = pages - 1; refresh(); return; }
+
+  $("h_count").textContent =
+    countLabel(data.total, data.total_all, data.offset, data.events.length, "event");
+  renderPager($("h_pager"), H, data.total);
+  $("histlist").innerHTML = data.events.length
     ? data.events.map(histRow).join("")
-    : `<div class="empty">No history yet. Events appear when releases are added, downloaded, and imported.</div>`;
+    : `<div class="empty">${histFiltersActive()
+        ? "No events match these filters."
+        : "No history yet. Events appear when releases are added, downloaded, and imported."}</div>`;
 }
+
+/* ---------------- toolbar wiring ---------------- */
+let histTimer = null;
+
+// Activity filters run against the payload we already hold, so they apply with
+// no round-trip. History is paged server-side, so typing needs a debounce.
+function activityChanged() {
+  savePrefs();
+  if (lastState) renderActivity(lastState); else refresh();
+}
+function historyChanged(debounce) {
+  savePrefs();
+  clearTimeout(histTimer);
+  if (debounce) histTimer = setTimeout(refresh, 250);
+  else refresh();
+}
+
+function bindToolbar(controls, st, onChange) {
+  for (const [id, key, parse] of controls) {
+    const el = $(id);
+    const evt = el.tagName === "SELECT" ? "change" : "input";
+    el.addEventListener(evt, () => {
+      st[key] = parse ? parse(el.value) : el.value;
+      st.page = 0;                      // a new filter always starts at page 1
+      onChange(evt === "input");
+    });
+  }
+}
+
+function bindPager(id, st, onChange) {
+  $(id).addEventListener("click", e => {
+    const btn = e.target.closest("button[data-page]");
+    if (!btn) return;
+    st.page = toInt(btn.dataset.page);
+    onChange();
+  });
+}
+
+bindToolbar([["a_q", "q"], ["a_state", "state"], ["a_cat", "cat"],
+             ["a_sort", "sort"], ["a_size", "size", toInt]], A, activityChanged);
+bindToolbar([["h_q", "q"], ["h_event", "event"], ["h_cat", "cat"],
+             ["h_range", "range", toInt], ["h_sort", "sort"], ["h_size", "size", toInt]],
+            H, historyChanged);
+
+$("a_order").addEventListener("click", () => {
+  A.order = A.order === "asc" ? "desc" : "asc";
+  A.page = 0; paintOrder("a_order", A); activityChanged();
+});
+$("h_order").addEventListener("click", () => {
+  H.order = H.order === "asc" ? "desc" : "asc";
+  H.page = 0; paintOrder("h_order", H); historyChanged(false);
+});
+
+bindPager("a_pager", A, activityChanged);
+bindPager("h_pager", H, () => historyChanged(false));
+
+$("a_clear").addEventListener("click", () => {
+  Object.assign(A, { q: "", state: "", cat: "", sort: "added_on",
+                     order: "desc", size: 25, page: 0 });
+  syncControls(); activityChanged();
+});
+$("h_clear").addEventListener("click", () => {
+  Object.assign(H, { q: "", event: "", cat: "", range: 0, sort: "ts",
+                     order: "desc", size: 25, page: 0 });
+  syncControls(); historyChanged(false);
+});
+
+loadPrefs();
+syncControls();
 
 /* ---------------- Logs ---------------- */
 function renderLogs(data) {
@@ -363,6 +725,7 @@ async function loadSettings() {
   const s = (await resp.json()).settings;
   $("s_speed").value = s.max_download_speed;
   updateSpeedHint();
+  $("s_history").value = s.history_retention;
   $("s_max_age").value = s.cloud_max_age_days;
   $("s_cleanup_hours").value = s.torbox_cleanup_hours;
   $("s_warn_days").value = s.sub_warn_days;
@@ -379,6 +742,7 @@ $("sform").addEventListener("submit", async e => {
     max_download_speed: parseFloat($("s_speed").value || "0"),
     cloud_max_age_days: parseFloat($("s_max_age").value || "0"),
     torbox_cleanup_hours: parseFloat($("s_cleanup_hours").value || "0"),
+    history_retention: parseInt($("s_history").value || "1000", 10),
     sub_warn_days: parseInt($("s_warn_days").value || "0", 10),
     error_burst_threshold: parseInt($("s_burst").value || "0", 10),
     pushover_enabled: $("s_po_enabled").checked,
@@ -414,7 +778,7 @@ $("s_test").addEventListener("click", async () => {
 async function refresh() {
   if (tab === "settings") return; // never clobber a form being edited
   let resp;
-  const url = tab === "history" ? "/ui/api/history"
+  const url = tab === "history" ? historyURL()
     : tab === "logs" ? `/ui/api/logs?level=${$("loglevel").value}`
     : "/ui/api/state";
   try {

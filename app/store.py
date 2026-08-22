@@ -128,6 +128,12 @@ class Store:
                     event TEXT,
                     detail TEXT
                 );
+                -- The web UI filters history by age and by event/category, and
+                -- sorts by name; these keep those queries off a full scan once
+                -- retention is raised past a few thousand rows.
+                CREATE INDEX IF NOT EXISTS idx_history_ts ON history(ts);
+                CREATE INDEX IF NOT EXISTS idx_history_event ON history(event);
+                CREATE INDEX IF NOT EXISTS idx_history_category ON history(category);
                 """
             )
             self._conn.commit()
@@ -232,10 +238,26 @@ class Store:
         return {r["key"]: r["value"] for r in rows}
 
     # --- history (survives torrent deletion, powers the web UI) ---
+    # Fallback retention, used before runtime settings are loaded. The live value
+    # is the ``history_retention`` runtime setting, editable in the UI.
     _HISTORY_LIMIT = 1000
+
+    # Whitelist of sortable columns: the sort key arrives from the UI as a query
+    # string, so it must never be interpolated into SQL unchecked.
+    _HISTORY_SORTS = {"ts": "id", "name": "name", "size": "size", "event": "event"}
+
+    def _retention(self) -> int:
+        # Deferred import: runtime imports this module at load time, so it can
+        # only be reached once both modules are initialised.
+        try:
+            from . import runtime
+            return max(int(runtime.get("history_retention")), 1)
+        except (ImportError, KeyError, TypeError, ValueError):
+            return self._HISTORY_LIMIT
 
     def add_event(self, hash_: str, name: str, category: str, event: str,
                   detail: str = "", size: int = 0) -> None:
+        keep = self._retention()
         with _lock:
             cur = self._conn.execute(
                 "INSERT INTO history (ts, hash, name, category, size, event, detail) "
@@ -248,17 +270,98 @@ class Store:
                 self._conn.execute(
                     "DELETE FROM history WHERE id NOT IN "
                     "(SELECT id FROM history ORDER BY id DESC LIMIT ?)",
-                    (self._HISTORY_LIMIT,),
+                    (keep,),
                 )
             self._conn.commit()
 
-    def history(self, limit: int = 200) -> list[dict]:
+    def prune_history(self) -> int:
+        """Trim history to the current retention now, returning rows removed.
+
+        ``add_event`` only prunes every hundredth insert, so lowering the
+        retention setting needs an explicit trim for the change to be visible
+        straight away instead of up to 99 events later.
+        """
+        keep = self._retention()
         with _lock:
+            cur = self._conn.execute(
+                "DELETE FROM history WHERE id NOT IN "
+                "(SELECT id FROM history ORDER BY id DESC LIMIT ?)", (keep,)
+            )
+            self._conn.commit()
+        return cur.rowcount
+
+    def history(self, limit: int = 200) -> list[dict]:
+        """Newest-first history, unfiltered. See ``history_page`` for the UI."""
+        return self.history_page(limit=limit)[0]
+
+    def history_page(self, *, limit: int = 50, offset: int = 0, search: str = "",
+                     events: Optional[list[str]] = None,
+                     categories: Optional[list[str]] = None,
+                     since: int = 0, sort: str = "ts",
+                     order: str = "desc") -> tuple[list[dict], int]:
+        """One page of history plus the total number of matching rows.
+
+        ``categories`` matches on the stored value, so an empty string in the
+        list selects uncategorised events. Unknown ``sort`` keys fall back to
+        chronological order rather than erroring — the UI is the only caller.
+        """
+        where: list[str] = []
+        params: list = []
+        if search:
+            like = f"%{search}%"
+            where.append("(name LIKE ? OR detail LIKE ? OR hash LIKE ?)")
+            params += [like, like, like]
+        if events:
+            where.append(f"event IN ({','.join('?' * len(events))})")
+            params += list(events)
+        if categories:
+            where.append(
+                f"COALESCE(category, '') IN ({','.join('?' * len(categories))})")
+            params += list(categories)
+        if since:
+            where.append("ts >= ?")
+            params.append(since)
+        clause = (" WHERE " + " AND ".join(where)) if where else ""
+
+        col = self._HISTORY_SORTS.get(sort, "id")
+        direction = "ASC" if order == "asc" else "DESC"
+        # id is the tiebreaker so rows with equal keys keep a stable order across
+        # pages; on the chronological sort it *is* the key (ids are monotonic).
+        if col == "id":
+            order_by = f"id {direction}"
+        elif col == "name":
+            order_by = f"name COLLATE NOCASE {direction}, id DESC"
+        else:
+            order_by = f"{col} {direction}, id DESC"
+
+        with _lock:
+            total = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM history" + clause, params).fetchone()["n"]
             rows = self._conn.execute(
-                "SELECT ts, hash, name, category, size, event, detail "
-                "FROM history ORDER BY id DESC LIMIT ?", (limit,)
-            ).fetchall()
-        return [dict(r) for r in rows]
+                "SELECT ts, hash, name, category, size, event, detail FROM history"
+                + clause + f" ORDER BY {order_by} LIMIT ? OFFSET ?",
+                params + [limit, offset]).fetchall()
+        return [dict(r) for r in rows], total
+
+    def history_count(self) -> int:
+        """Total retained events, ignoring filters — the UI shows it alongside
+        the filtered count so a search says how much it narrowed things down."""
+        with _lock:
+            return self._conn.execute(
+                "SELECT COUNT(*) AS n FROM history").fetchone()["n"]
+
+    def history_facets(self) -> dict[str, list[str]]:
+        """Distinct event kinds and categories, for the UI's filter dropdowns."""
+        with _lock:
+            events = self._conn.execute(
+                "SELECT DISTINCT event FROM history ORDER BY event").fetchall()
+            categories = self._conn.execute(
+                "SELECT DISTINCT COALESCE(category, '') AS c FROM history "
+                "ORDER BY c").fetchall()
+        return {
+            "events": [r["event"] for r in events if r["event"]],
+            "categories": [r["c"] for r in categories],
+        }
 
 
 store = Store(settings.db_path)

@@ -76,9 +76,40 @@ async def ui_state() -> JSONResponse:
     })
 
 
+# The UI needs a way to say "uncategorised" in a comma-separated query string,
+# where an empty item is indistinguishable from a trailing comma.
+_NO_CATEGORY = "__none__"
+
+
+def _csv(raw: str) -> list[str]:
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
 @ui_api.get("/ui/api/history")
-async def ui_history(limit: int = 200) -> JSONResponse:
-    return JSONResponse({"events": store.history(min(max(limit, 1), 1000))})
+async def ui_history(limit: int = 50, offset: int = 0, q: str = "",
+                     events: str = "", categories: str = "", since: int = 0,
+                     sort: str = "ts", order: str = "desc") -> JSONResponse:
+    """One page of history, filtered/sorted server-side.
+
+    Paging is done in SQL rather than in the browser so search covers the whole
+    retained history instead of only whatever the page happened to fetch.
+    """
+    limit = min(max(limit, 1), 500)
+    offset = max(offset, 0)
+    cats = [("" if c == _NO_CATEGORY else c) for c in _csv(categories)]
+    rows, total = store.history_page(
+        limit=limit, offset=offset, search=q.strip(), events=_csv(events),
+        categories=cats, since=max(since, 0), sort=sort, order=order)
+    facets = store.history_facets()
+    return JSONResponse({
+        "events": rows,
+        "total": total,
+        "total_all": store.history_count(),
+        "offset": offset,
+        "limit": limit,
+        "facets": facets,
+        "retention": runtime.get("history_retention"),
+    })
 
 
 @ui_api.get("/ui/api/logs")
@@ -103,6 +134,10 @@ async def ui_settings_save(request: Request) -> JSONResponse:
         runtime.update(body)
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
+    if "history_retention" in body:
+        # add_event() only trims every hundredth insert, so apply a lowered
+        # retention now — otherwise the History tab keeps showing pruned rows.
+        store.prune_history()
     return JSONResponse({"settings": runtime.as_dict(), "pushover_ready": notify.configured()})
 
 

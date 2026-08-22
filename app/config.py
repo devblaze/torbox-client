@@ -106,6 +106,10 @@ class Settings:
     # Master switch; only matters once token + user key are set.
     pushover_enabled: bool = _bool("PUSHOVER_ENABLED", True)
 
+    # --- Web UI ---
+    # Events kept in the History tab; the oldest beyond this are pruned.
+    history_retention: int = _int("HISTORY_RETENTION", 1000)
+
     listen_host: str = _str("LISTEN_HOST", "0.0.0.0")
     listen_port: int = _int("LISTEN_PORT", 8080)
     log_level: str = _str("LOG_LEVEL", "INFO").upper()

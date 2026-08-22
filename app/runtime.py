@@ -41,6 +41,8 @@ FIELDS: dict[str, _Field] = {
     "pushover_enabled": _Field("bool", settings.pushover_enabled),
     "pushover_token": _Field("str", settings.pushover_token),
     "pushover_user": _Field("str", settings.pushover_user),
+    # How many History-tab events to keep before pruning the oldest.
+    "history_retention": _Field("int", settings.history_retention, 100),
 }
 
 _values: dict[str, Any] = {}
