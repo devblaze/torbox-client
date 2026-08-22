@@ -166,7 +166,7 @@ All configuration is via environment variables (see `.env.example`):
 | `POLL_INTERVAL` | `15` | Seconds between TorBox status polls. |
 | `MAX_PARALLEL_DOWNLOADS` | `4` | Concurrent file downloads from the TorBox CDN. |
 | `MAX_PARALLEL_TORRENTS` | `2` | Torrents pulled locally at the same time (0 = unlimited). |
-| `MAX_DOWNLOAD_SPEED` | `0` | Aggregate download cap in MiB/s across all files (0 = unlimited). |
+| `MAX_DOWNLOAD_SPEED` | `0` | Aggregate download cap in MiB/s across all files (0 = unlimited). Converting from Mbps: divide by ~8.4 — 50 Mbps ≈ `6`, 100 Mbps ≈ `12`, 1 Gbps ≈ `119`. |
 | `STALL_TIMEOUT` | `90` | Seconds without data before a stalled stream is retried with a fresh link. |
 | `DOWNLOAD_RETRIES` | `4` | Attempts per file; each retry resumes from the bytes already on disk. |
 | `TORBOX_CLEANUP_HOURS` | `24` | Delete the TorBox **cloud** copy this long after the local download completes, freeing your TorBox active-torrent slots (local files kept; 0 = never). ✏️ |

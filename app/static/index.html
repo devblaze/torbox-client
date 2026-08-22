@@ -164,6 +164,7 @@
             <label for="s_speed">Download speed limit (MiB/s)</label>
             <input id="s_speed" type="number" min="0" step="0.1">
             <p class="hint">Aggregate cap across all files pulled from TorBox. 0 = unlimited. Applies immediately, even to downloads already running.</p>
+            <p class="hint">Thinking in Mbps (ISP speeds)? Divide by ~8.4 — e.g. 50 Mbps ≈ <b>6</b>, 100 Mbps ≈ <b>12</b>, 500 Mbps ≈ <b>60</b>, 1 Gbps ≈ <b>119</b> MiB/s. <span id="s_speed_mbps"></span></p>
           </div>
           <h3>TorBox cloud cleanup</h3>
           <div class="field">
@@ -346,6 +347,14 @@ function setStatus(msg, ok) {
   el.className = ok ? "ok" : "bad";
 }
 
+// 1 MiB/s = 8.388608 Mbps; shows the entered cap in the units ISPs advertise.
+function updateSpeedHint() {
+  const v = parseFloat($("s_speed").value || "0");
+  const el = $("s_speed_mbps");
+  el.textContent = v > 0 ? `Current setting: ${v} MiB/s ≈ ${(v * 8.388608).toFixed(1)} Mbps.` : "";
+}
+$("s_speed").addEventListener("input", updateSpeedHint);
+
 async function loadSettings() {
   let resp;
   try { resp = await fetch("/ui/api/settings"); } catch { return; }
@@ -353,6 +362,7 @@ async function loadSettings() {
   if (!resp.ok) return;
   const s = (await resp.json()).settings;
   $("s_speed").value = s.max_download_speed;
+  updateSpeedHint();
   $("s_max_age").value = s.cloud_max_age_days;
   $("s_cleanup_hours").value = s.torbox_cleanup_hours;
   $("s_warn_days").value = s.sub_warn_days;
