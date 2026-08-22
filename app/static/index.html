@@ -15,6 +15,7 @@
   body {
     margin: 0; background: var(--bg); color: var(--text);
     font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    -webkit-text-size-adjust: 100%;  /* iOS must not inflate text on rotate */
   }
   header {
     display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
@@ -37,7 +38,7 @@
     padding: 14px 16px; margin-bottom: 12px;
   }
   .row-top { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-  .name { font-weight: 600; word-break: break-all; }
+  .name { font-weight: 600; word-break: break-word; overflow-wrap: anywhere; min-width: 0; }
   .badge {
     font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
     padding: 2px 8px; border-radius: 20px; white-space: nowrap;
@@ -72,9 +73,17 @@
     background: var(--panel2); color: var(--text); border: 1px solid var(--border);
     border-radius: 8px; padding: 6px 9px; font: inherit;
   }
-  .toolbar input[type=search] { flex: 1 1 200px; min-width: 150px; }
+  .toolbar input[type=search] { flex: 1 1 200px; min-width: 120px; }
   .toolbar input[type=search]::placeholder { color: var(--muted); }
-  .toolbar select { max-width: 200px; }
+  .toolbar select { flex: 0 1 auto; max-width: 200px; min-width: 0; }
+  /* The sort key and its direction toggle belong together, so they wrap as one. */
+  .sortgrp { display: flex; gap: 6px; align-items: center; min-width: 0; }
+  .sortgrp select { flex: 1 1 auto; }
+  /* display:contents so the controls sit directly in the toolbar's flex row;
+     the wrapper only becomes a real box once it collapses on narrow screens. */
+  .filters { display: contents; }
+  .filttog { display: none; }
+  .filttog.on { color: var(--accent); border-color: var(--accent); }
   .iconbtn {
     background: var(--panel2); color: var(--text); border: 1px solid var(--border);
     border-radius: 8px; padding: 6px 10px; font: inherit; cursor: pointer; line-height: 1.45;
@@ -98,7 +107,7 @@
   .hist .when { color: var(--muted); font-size: 12px; min-width: 132px; font-variant-numeric: tabular-nums; }
   .hist .detail { color: var(--muted); font-size: 12px; }
   .hist .detail.long {
-    max-width: 42ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    max-width: min(42ch, 100%); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   /* logs */
   .logbar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; color: var(--muted); font-size: 13px; }
@@ -108,7 +117,7 @@
   }
   #logbox {
     background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
-    padding: 12px 14px; height: calc(100vh - 200px); min-height: 300px; overflow-y: auto;
+    padding: 12px 14px; height: calc(100vh - 200px); min-height: 260px; overflow-y: auto;
     font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     white-space: pre-wrap; word-break: break-all;
   }
@@ -158,6 +167,74 @@
   }
   #login .fail { color: var(--err); font-size: 13px; margin-top: 10px; display: none; }
   .hidden { display: none !important; }
+  /* ---------------- narrow screens ---------------- */
+  /* Tablets and phones: the toolbar controls stop being a ragged stack and pair
+     up two-per-row, and the header collapses to title+stats over a full-width
+     tab bar instead of three stacked rows. */
+  @media (max-width: 720px) {
+    main { padding: 12px 12px 32px; }
+    header { padding: 8px 12px; gap: 6px 12px; }
+    header h1 { font-size: 15px; }
+    .stats { font-size: 12px; gap: 10px; justify-content: flex-end; }
+    nav { order: 3; width: 100%; gap: 2px; }
+    nav button { flex: 1 1 0; padding: 9px 4px; }
+
+    .toolbar { padding: 10px; gap: 8px; }
+    /* Search stays visible; the rest collapses so the toolbar costs ~56px
+       instead of a fifth of the screen. */
+    .toolbar input[type=search] { flex: 1 1 140px; }
+    .filttog { display: block; flex: 0 0 auto; }
+    .filters { display: none; flex: 1 1 100%; flex-wrap: wrap; gap: 8px; }
+    .toolbar.open .filters { display: flex; }
+    /* calc() rather than a percentage so the flex gap is accounted for. */
+    .filters select, .filters .sortgrp, .filters .iconbtn { flex: 1 1 calc(50% - 4px); max-width: none; }
+    .sortgrp .iconbtn { flex: 0 0 auto; }
+
+    .pagerbar { margin-bottom: 12px; }
+    .pagerbar > span:first-child { flex: 1 1 100%; }
+    .pager { margin: 0 auto; }
+
+    .card { padding: 12px; }
+    .phases { grid-template-columns: 48px 1fr 40px; gap: 7px 8px; }
+    .meta { gap: 6px 12px; }
+    /* The timestamp reserves a 132px column on desktop; on a phone that pushes
+       the badge and name onto their own lines for no benefit. */
+    .hist .when { min-width: 0; }
+    /* One truncated line wastes the width a phone does have — an error message
+       is worth three lines before it gets an ellipsis. */
+    .hist .detail.long {
+      max-width: 100%; white-space: normal; display: -webkit-box;
+      -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+    }
+
+    .field input[type=text], .field input[type=number], .field input[type=password] { max-width: none; }
+    #logbox { height: calc(100vh - 240px); }
+  }
+
+  /* Touch targets and, crucially, 16px controls: iOS zooms the whole page when a
+     focused input is smaller than that, and the zoom persists after blur — which
+     looks exactly like a broken, horizontally-scrolled layout. */
+  @media (max-width: 720px), (pointer: coarse) {
+    .toolbar input[type=search], .toolbar select, .toolbar .iconbtn,
+    .logbar select, #login input, #login button,
+    .field input[type=text], .field input[type=number], .field input[type=password] {
+      font-size: 16px; min-height: 40px;
+    }
+    .pager button { min-width: 38px; min-height: 38px; }
+    nav button { font-size: 14px; }
+    .btn { min-height: 42px; }
+  }
+
+  /* Very small phones: two controls per row stop fitting comfortably. */
+  @media (max-width: 340px) {
+    .filters select, .filters .sortgrp, .filters .iconbtn { flex: 1 1 100%; }
+    .stats { gap: 8px; }
+    .phases { grid-template-columns: 44px 1fr 38px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .bar i { transition: none; }
+  }
 </style>
 </head>
 <body>
@@ -177,32 +254,38 @@
     <div id="tab-activity">
       <div class="toolbar">
         <input id="a_q" type="search" placeholder="Search name or hash…" autocomplete="off">
-        <select id="a_state" title="Filter by state">
-          <option value="">All states</option>
-          <option value="~active">Active (queued · cloud · pulling)</option>
-          <option value="queued">Queued</option>
-          <option value="cloud">Cloud DL</option>
-          <option value="downloading">Pulling local</option>
-          <option value="completed">Completed</option>
-          <option value="error">Error</option>
-        </select>
-        <select id="a_cat" title="Filter by category"><option value="">All categories</option></select>
-        <select id="a_sort" title="Sort by">
-          <option value="added_on">Added</option>
-          <option value="completion_on">Completed</option>
-          <option value="name">Name</option>
-          <option value="size">Size</option>
-          <option value="progress">Progress</option>
-          <option value="dlspeed">Speed</option>
-        </select>
-        <button type="button" class="iconbtn" id="a_order">↓</button>
-        <select id="a_size" title="Rows per page">
-          <option value="25">25 / page</option>
-          <option value="50">50 / page</option>
-          <option value="100">100 / page</option>
-          <option value="0">Show all</option>
-        </select>
-        <button type="button" class="iconbtn" id="a_clear" title="Reset search, filters and sort">Clear</button>
+        <button type="button" class="iconbtn filttog" id="a_filttog"
+                aria-expanded="false" aria-controls="a_filters">Filters</button>
+        <div class="filters" id="a_filters">
+          <select id="a_state" title="Filter by state">
+            <option value="">All states</option>
+            <option value="~active">Active (queued · cloud · pulling)</option>
+            <option value="queued">Queued</option>
+            <option value="cloud">Cloud DL</option>
+            <option value="downloading">Pulling local</option>
+            <option value="completed">Completed</option>
+            <option value="error">Error</option>
+          </select>
+          <select id="a_cat" title="Filter by category"><option value="">All categories</option></select>
+          <div class="sortgrp">
+            <select id="a_sort" title="Sort by">
+              <option value="added_on">Sort: Added</option>
+              <option value="completion_on">Sort: Completed</option>
+              <option value="name">Sort: Name</option>
+              <option value="size">Sort: Size</option>
+              <option value="progress">Sort: Progress</option>
+              <option value="dlspeed">Sort: Speed</option>
+            </select>
+            <button type="button" class="iconbtn" id="a_order" aria-label="Sort direction">↓</button>
+          </div>
+          <select id="a_size" title="Rows per page">
+            <option value="25">25 / page</option>
+            <option value="50">50 / page</option>
+            <option value="100">100 / page</option>
+            <option value="0">Show all</option>
+          </select>
+          <button type="button" class="iconbtn" id="a_clear" title="Reset search, filters and sort">Clear</button>
+        </div>
       </div>
       <div class="pagerbar"><span id="a_count"></span><span class="pager" id="a_pager"></span></div>
       <div id="actlist"></div>
@@ -210,29 +293,35 @@
     <div id="tab-history" class="hidden">
       <div class="toolbar">
         <input id="h_q" type="search" placeholder="Search name, detail or hash…" autocomplete="off">
-        <select id="h_event" title="Filter by event"><option value="">All events</option></select>
-        <select id="h_cat" title="Filter by category"><option value="">All categories</option></select>
-        <select id="h_range" title="Filter by age">
-          <option value="0">Any time</option>
-          <option value="86400">Last 24 hours</option>
-          <option value="604800">Last 7 days</option>
-          <option value="2592000">Last 30 days</option>
-          <option value="7776000">Last 90 days</option>
-        </select>
-        <select id="h_sort" title="Sort by">
-          <option value="ts">Time</option>
-          <option value="name">Name</option>
-          <option value="size">Size</option>
-          <option value="event">Event</option>
-        </select>
-        <button type="button" class="iconbtn" id="h_order">↓</button>
-        <select id="h_size" title="Rows per page">
-          <option value="25">25 / page</option>
-          <option value="50">50 / page</option>
-          <option value="100">100 / page</option>
-          <option value="200">200 / page</option>
-        </select>
-        <button type="button" class="iconbtn" id="h_clear" title="Reset search, filters and sort">Clear</button>
+        <button type="button" class="iconbtn filttog" id="h_filttog"
+                aria-expanded="false" aria-controls="h_filters">Filters</button>
+        <div class="filters" id="h_filters">
+          <select id="h_event" title="Filter by event"><option value="">All events</option></select>
+          <select id="h_cat" title="Filter by category"><option value="">All categories</option></select>
+          <select id="h_range" title="Filter by age">
+            <option value="0">Any time</option>
+            <option value="86400">Last 24 hours</option>
+            <option value="604800">Last 7 days</option>
+            <option value="2592000">Last 30 days</option>
+            <option value="7776000">Last 90 days</option>
+          </select>
+          <div class="sortgrp">
+            <select id="h_sort" title="Sort by">
+              <option value="ts">Sort: Time</option>
+              <option value="name">Sort: Name</option>
+              <option value="size">Sort: Size</option>
+              <option value="event">Sort: Event</option>
+            </select>
+            <button type="button" class="iconbtn" id="h_order" aria-label="Sort direction">↓</button>
+          </div>
+          <select id="h_size" title="Rows per page">
+            <option value="25">25 / page</option>
+            <option value="50">50 / page</option>
+            <option value="100">100 / page</option>
+            <option value="200">200 / page</option>
+          </select>
+          <button type="button" class="iconbtn" id="h_clear" title="Reset search, filters and sort">Clear</button>
+        </div>
       </div>
       <div class="pagerbar"><span id="h_count"></span><span class="pager" id="h_pager"></span></div>
       <div id="histlist"></div>
@@ -551,6 +640,7 @@ function renderActivity(data) {
   const start = A.size ? A.page * A.size : 0;
   const page = A.size ? rows.slice(start, start + A.size) : rows;
 
+  markFilters("a_filttog", !!(A.state || A.cat));
   $("a_count").textContent =
     countLabel(rows.length, data.torrents.length, start, page.length, "torrent");
   renderPager($("a_pager"), A, rows.length);
@@ -609,6 +699,7 @@ function renderHistory(data) {
   const pages = pageCount(H, data.total);
   if (H.page >= pages) { H.page = pages - 1; refresh(); return; }
 
+  markFilters("h_filttog", !!(H.event || H.cat || H.range));
   $("h_count").textContent =
     countLabel(data.total, data.total_all, data.offset, data.events.length, "event");
   renderPager($("h_pager"), H, data.total);
@@ -647,6 +738,23 @@ function bindToolbar(controls, st, onChange) {
   }
 }
 
+// On phones the filter controls collapse behind a Filters button; the button
+// highlights when a filter is hiding inside it, so a narrowed list is never
+// unexplained. Desktop shows the controls inline and hides the toggle.
+function bindFilterToggle(id, toolbarOf) {
+  const btn = $(id);
+  btn.addEventListener("click", () => {
+    const open = btn.closest(".toolbar").classList.toggle("open");
+    btn.setAttribute("aria-expanded", String(open));
+  });
+}
+
+function markFilters(id, active) {
+  const btn = $(id);
+  btn.classList.toggle("on", active);
+  btn.textContent = active ? "Filters •" : "Filters";
+}
+
 function bindPager(id, st, onChange) {
   $(id).addEventListener("click", e => {
     const btn = e.target.closest("button[data-page]");
@@ -673,6 +781,9 @@ $("h_order").addEventListener("click", () => {
 
 bindPager("a_pager", A, activityChanged);
 bindPager("h_pager", H, () => historyChanged(false));
+
+bindFilterToggle("a_filttog");
+bindFilterToggle("h_filttog");
 
 $("a_clear").addEventListener("click", () => {
   Object.assign(A, { q: "", state: "", cat: "", sort: "added_on",
