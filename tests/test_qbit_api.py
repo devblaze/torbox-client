@@ -98,6 +98,17 @@ def test_qbit_state_mapping():
     assert qbit_api._qbit_state(mk(state=STATE_CLOUD, dlspeed=5)) == "downloading"
 
 
+def test_cloud_finished_reports_queued_not_stalled():
+    """TorBox is done; we are waiting for a local pull slot. Sonarr renders
+    stalledDL as "The download is stalled with no connections" — queuedDL is
+    both accurate and free of the false alarm."""
+    from app.store import STATE_CLOUD, Torrent
+    mk = lambda **k: Torrent(hash="a" * 40, name="x", state=STATE_CLOUD, **k)
+    assert qbit_api._qbit_state(mk(cloud_progress=1.0, dlspeed=0)) == "queuedDL"
+    # Still genuinely downloading in the cloud with no peers -> still stalled.
+    assert qbit_api._qbit_state(mk(cloud_progress=0.4, dlspeed=0)) == "stalledDL"
+
+
 # --------------------------------------------------------------------------- #
 # full login flow via the ASGI app (worker/network stubbed out)
 # --------------------------------------------------------------------------- #

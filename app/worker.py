@@ -10,7 +10,6 @@ Loop:
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import os
 import time
@@ -38,6 +37,16 @@ _attempts: dict[str, int] = {}
 _TORRENT_RETRY_LIMIT = 3
 
 _FAILED_STATES = {"failed", "error", "cberror", "uploaderror"}
+
+# Seconds between local-progress writes (and stall-watchdog checks).
+_PROGRESS_TICK = 3
+# Bytes a torrent's local pull must gain inside one watchdog window to count as
+# alive. settings.stall_timeout is enforced by httpx as a *read* timeout, which
+# only fires when a socket goes completely silent — a CDN stream that trickles a
+# few KiB keeps it happy indefinitely while the torrent sits just short of done
+# forever, holding a MAX_PARALLEL_TORRENTS slot nothing else can use. Measuring
+# actual bytes catches the trickle as well as the silence.
+_STALL_FLOOR_BYTES = 1 << 20  # 1 MiB
 
 # Caps concurrent file streams across all torrents. Created lazily on the running
 # loop (asyncio primitives bind to the loop that first awaits them).
@@ -246,6 +255,29 @@ async def _download_file(t: Torrent, file: dict, progress: dict) -> None:
     raise IOError(f"{rel} failed after {settings.download_retries} attempts: {last_err!r}")
 
 
+def _stall_window() -> float:
+    """Seconds of no real progress before a torrent's local pull is abandoned.
+
+    Twice ``stall_timeout`` so that one full per-file retry cycle (the httpx
+    read timeout plus its backoff) can play out and recover on its own before
+    the torrent-level watchdog steps in. 0 disables the watchdog.
+    """
+    return max(settings.stall_timeout, 0) * 2
+
+
+def _stall_floor(window: float) -> int:
+    """Bytes that must arrive within ``window`` before we call a pull stalled.
+
+    A configured speed cap can legitimately hold throughput under the flat
+    floor, so never demand more than a quarter of what the cap allows.
+    """
+    floor = _STALL_FLOOR_BYTES
+    cap = runtime.get("max_download_speed") * (1 << 20)  # bytes/s, 0 = unlimited
+    if cap > 0:
+        floor = min(floor, int(cap * window / 4))
+    return max(floor, 1)
+
+
 async def _download_torrent(hash_: str) -> None:
     t = store.get(hash_)
     if not t or not t.torbox_id or not t.files:
@@ -261,33 +293,59 @@ async def _download_torrent(hash_: str) -> None:
     started = time.time()
     log.info("Downloading %s (%d files, %.2f GiB)", t.name, len(t.files), total / (1 << 30))
     try:
-        # A light periodic progress writer while files stream in.
+        window = _stall_window()
+
+        # A light periodic progress writer while files stream in, doubling as
+        # the watchdog that ends a pull which has stopped getting anywhere.
         async def _report() -> None:
             last_done = progress["done"]
+            mark_done = progress["done"]      # bytes at the start of this window
+            mark_time = time.monotonic()
             while True:
-                await asyncio.sleep(3)
+                await asyncio.sleep(_PROGRESS_TICK)
                 cur = store.get(hash_)
                 if not cur:
-                    return
+                    return  # removed from under us; the caller cancels the pull
                 cur.state = STATE_DOWNLOADING
                 cur.local_progress = min(progress["done"] / total, 1.0)
                 # Windowed speed: shows 0 during a stall instead of a decaying average.
-                cur.dlspeed = max(int((progress["done"] - last_done) / 3), 0)
+                cur.dlspeed = max(int((progress["done"] - last_done) / _PROGRESS_TICK), 0)
                 last_done = progress["done"]
                 store.upsert(cur)
 
-        reporter = asyncio.create_task(_report())
-        try:
+                if window <= 0:
+                    continue
+                gained = progress["done"] - mark_done
+                if gained >= _stall_floor(window):
+                    mark_done, mark_time = progress["done"], time.monotonic()
+                elif time.monotonic() - mark_time >= window:
+                    raise TimeoutError(
+                        f"only {gained / (1 << 10):.0f} KiB in "
+                        f"{int(time.monotonic() - mark_time)}s")
+
+        async def _pull_files() -> None:
             # TaskGroup (unlike gather) cancels the still-running file downloads
             # as soon as one fails, so a failed torrent leaves no detached tasks
             # writing to disk when we retry it — that used to corrupt files.
             async with asyncio.TaskGroup() as tg:
                 for f in t.files:
                     tg.create_task(_download_file(t, f, progress))
+
+        files = asyncio.create_task(_pull_files())
+        reporter = asyncio.create_task(_report())
+        try:
+            finished, _ = await asyncio.wait(
+                {files, reporter}, return_when=asyncio.FIRST_COMPLETED)
         finally:
+            # Whichever finished, the other one is done here: cancelling the
+            # pull also stops every file stream writing to disk.
+            files.cancel()
             reporter.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await reporter
+            await asyncio.gather(files, reporter, return_exceptions=True)
+        if files in finished:
+            files.result()     # the pull won the race: success, or its own failure
+        else:
+            reporter.result()  # the watchdog tripped, or the row vanished under us
 
         done = store.get(hash_)
         if not done:
