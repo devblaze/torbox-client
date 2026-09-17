@@ -48,6 +48,15 @@ _PROGRESS_TICK = 3
 # actual bytes catches the trickle as well as the silence.
 _STALL_FLOOR_BYTES = 1 << 20  # 1 MiB
 
+
+def _now() -> float:
+    """Monotonic clock for the stall watchdog.
+
+    Indirected so tests can drive the watchdog from a clock they control,
+    instead of racing real sleeps against a real deadline on a loaded machine.
+    """
+    return time.monotonic()
+
 # Caps concurrent file streams across all torrents. Created lazily on the running
 # loop (asyncio primitives bind to the loop that first awaits them).
 _file_semaphore: asyncio.Semaphore | None = None
@@ -334,7 +343,7 @@ async def _download_torrent(hash_: str) -> None:
         async def _report() -> None:
             last_done = progress["done"]
             mark_done = progress["done"]      # bytes at the start of this window
-            mark_time = time.monotonic()
+            mark_time = _now()
             while True:
                 await asyncio.sleep(_PROGRESS_TICK)
                 cur = store.get(hash_)
@@ -351,11 +360,11 @@ async def _download_torrent(hash_: str) -> None:
                     continue
                 gained = progress["done"] - mark_done
                 if gained >= _stall_floor(window):
-                    mark_done, mark_time = progress["done"], time.monotonic()
-                elif time.monotonic() - mark_time >= window:
+                    mark_done, mark_time = progress["done"], _now()
+                elif _now() - mark_time >= window:
                     raise TimeoutError(
                         f"only {gained / (1 << 10):.0f} KiB in "
-                        f"{int(time.monotonic() - mark_time)}s")
+                        f"{int(_now() - mark_time)}s")
 
         async def _pull_files() -> None:
             # TaskGroup (unlike gather) cancels the still-running file downloads
