@@ -399,27 +399,46 @@ def test_stall_floor_never_reaches_zero(monkeypatch):
     assert worker._stall_floor(1) >= 1
 
 
+def _fake_clock(monkeypatch):
+    """A monotonic clock the test advances by hand.
+
+    Time only moves when a download coroutine moves it, so the watchdog can
+    never fire merely because a loaded CI runner starved the event loop — if
+    the downloader doesn't run, no time passes.
+    """
+    clock = {"t": 0.0}
+    monkeypatch.setattr(worker, "_now", lambda: clock["t"])
+    monkeypatch.setattr(worker, "_PROGRESS_TICK", 0.001)
+    monkeypatch.setattr(worker, "_stall_window", lambda: 1.0)
+    return clock
+
+
+def _one_file_torrent(worker_env, h, size=1 << 30):
+    worker_env.upsert(Torrent(hash=h, name="x", category="radarr", torbox_id=1,
+                              state=STATE_DOWNLOADING,
+                              files=[{"id": 1, "name": "f.mkv", "size": size}]))
+
+
 async def test_stalled_pull_is_cancelled_and_requeued(worker_env, monkeypatch):
     """The headline fix: a stream that opens, delivers almost nothing and never
     errors used to hold its MAX_PARALLEL_TORRENTS slot forever. httpx's read
     timeout can't see it, because bytes technically still arrive."""
     h = "a" * 40
-    worker_env.upsert(Torrent(hash=h, name="x", category="radarr", torbox_id=1,
-                              state=STATE_DOWNLOADING,
-                              files=[{"id": 1, "name": "f.mkv", "size": 1 << 30}]))
+    _one_file_torrent(worker_env, h)
+    clock = _fake_clock(monkeypatch)
     cancelled = {"v": False}
 
     async def trickle(t, f, progress):
-        progress["done"] += 16  # a token few bytes, then nothing, forever
+        progress["done"] += 16  # a token few bytes, then nothing ever again
         try:
-            await asyncio.sleep(30)
+            while True:
+                await asyncio.sleep(0.001)
+                clock["t"] += 0.5  # time passes; no bytes do
         except asyncio.CancelledError:
             cancelled["v"] = True
             raise
 
     monkeypatch.setattr(worker, "_download_file", trickle)
-    monkeypatch.setattr(worker, "_PROGRESS_TICK", 0.01)
-    monkeypatch.setattr(worker, "_stall_window", lambda: 0.05)
     worker._downloading.add(h)
     await worker._download_torrent(h)
 
@@ -430,39 +449,44 @@ async def test_stalled_pull_is_cancelled_and_requeued(worker_env, monkeypatch):
 
 
 async def test_slow_but_progressing_pull_is_left_alone(worker_env, monkeypatch):
-    """Clearing the floor each window must keep a genuinely slow pull running."""
+    """Bytes arriving must push the deadline out, however long the pull runs.
+
+    The clock advances half a window per step across twenty steps — ten windows
+    of simulated time — so this genuinely exercises the reset rather than just
+    finishing before the first window expires.
+    """
     h = "a" * 40
-    worker_env.upsert(Torrent(hash=h, name="x", category="radarr", torbox_id=1,
-                              state=STATE_DOWNLOADING,
-                              files=[{"id": 1, "name": "f.mkv", "size": 8 << 20}]))
+    steps, per_step = 20, 2 << 20
+    _one_file_torrent(worker_env, h, size=steps * per_step)
+    clock = _fake_clock(monkeypatch)
 
     async def slow(t, f, progress):
-        for _ in range(8):
-            await asyncio.sleep(0.02)
-            progress["done"] += 1 << 20
+        for _ in range(steps):
+            await asyncio.sleep(0.001)
+            clock["t"] += 0.5          # half a window
+            progress["done"] += per_step  # comfortably over the 1 MiB floor
 
     monkeypatch.setattr(worker, "_download_file", slow)
-    monkeypatch.setattr(worker, "_PROGRESS_TICK", 0.01)
-    monkeypatch.setattr(worker, "_stall_window", lambda: 0.05)
     worker._downloading.add(h)
     await worker._download_torrent(h)
 
+    assert clock["t"] >= 10.0  # ten windows elapsed without a false positive
     assert worker_env.get(h).state == STATE_COMPLETED
 
 
 async def test_watchdog_disabled_by_zero_window(worker_env, monkeypatch):
     h = "a" * 40
-    worker_env.upsert(Torrent(hash=h, name="x", category="radarr", torbox_id=1,
-                              state=STATE_DOWNLOADING,
-                              files=[{"id": 1, "name": "f.mkv", "size": 10}]))
+    _one_file_torrent(worker_env, h, size=10)
+    clock = _fake_clock(monkeypatch)
+    monkeypatch.setattr(worker, "_stall_window", lambda: 0)
 
-    async def quick(t, f, progress):
-        await asyncio.sleep(0.05)  # longer than a window would be, if there were one
+    async def silent(t, f, progress):
+        for _ in range(10):
+            await asyncio.sleep(0.001)
+            clock["t"] += 100.0  # far past any window, and not a byte delivered
         progress["done"] += 10
 
-    monkeypatch.setattr(worker, "_download_file", quick)
-    monkeypatch.setattr(worker, "_PROGRESS_TICK", 0.01)
-    monkeypatch.setattr(worker, "_stall_window", lambda: 0)
+    monkeypatch.setattr(worker, "_download_file", silent)
     worker._downloading.add(h)
     await worker._download_torrent(h)
     assert worker_env.get(h).state == STATE_COMPLETED
