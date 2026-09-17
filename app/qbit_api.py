@@ -238,7 +238,11 @@ def _qbit_state(t: Torrent) -> str:
         return "downloading"
     if t.state == STATE_QUEUED:
         return "metaDL"
-    # cloud phase
+    # Cloud phase. A torrent TorBox has already finished is waiting for a local
+    # download slot, not stalled — Sonarr renders stalledDL as "The download is
+    # stalled with no connections", which is both wrong and alarming here.
+    if t.cloud_progress >= 0.999:
+        return "queuedDL"
     return "downloading" if t.dlspeed > 0 else "stalledDL"
 
 
