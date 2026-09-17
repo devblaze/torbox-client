@@ -1,0 +1,5 @@
+# Every change needs a review from the repository owner.
+# Paired with the "Require review from Code Owners" rule on main, this makes a
+# contributor's pull request need *this* approval specifically, rather than an
+# approving review from anyone who happens to have access.
+* @devblaze
