@@ -152,17 +152,51 @@ def _save_path(category: str) -> str:
     return os.path.join(settings.save_path_base, category) if category else settings.save_path_base
 
 
+def _top_segments(files: list[dict]) -> set[str]:
+    """First path segment of every file — the torrent's root folder, if it has one."""
+    return {n.replace("\\", "/").split("/", 1)[0]
+            for n in (f.get("name", "") for f in files) if n}
+
+
+def _as_segment(name: str) -> str:
+    """A torrent name reduced to one safe path segment."""
+    seg = name.replace("\\", "/").replace("/", "_").strip().strip(".")
+    return seg or "torrent"
+
+
+def _root_folder(name: str, files: list[dict]) -> str:
+    """Folder inside the category dir to put this torrent's files in.
+
+    Empty when the torrent's files already share one top-level segment — a
+    single file, or a release that ships its own folder — because then that
+    segment is the root and TorBox's layout is kept as-is.
+
+    Otherwise we make a folder named after the torrent, the same way real
+    qBittorrent does with ``create_subfolder_enabled``. Loose files written
+    straight into the category dir have no root to point Sonarr/Radarr at, and
+    they collide between torrents.
+    """
+    return "" if len(_top_segments(files)) == 1 else _as_segment(name)
+
+
 def _content_path(t: Torrent, files: list[dict]) -> str:
-    """Root file/folder path as the *arr apps should see it."""
+    """Root file/folder path as the *arr apps should see it.
+
+    Never the bare category dir: Sonarr/Radarr refuse to import a completed
+    torrent whose content_path equals the download client's own base path
+    ("Unable to Import. Path matches client base download directory").
+    """
     base = _save_path(t.category)
-    names = [f.get("name", "") for f in files if f.get("name")]
-    if not names:
-        return os.path.join(base, t.name)
-    # Common first path segment == the torrent's root folder (or a single file).
-    tops = {n.replace("\\", "/").split("/", 1)[0] for n in names}
-    if len(tops) == 1:
-        return os.path.join(base, next(iter(tops)))
-    return base
+    root = _root_folder(t.name, files)
+    if root:
+        return os.path.join(base, root)
+    return os.path.join(base, next(iter(_top_segments(files))))
+
+
+def _file_dest(t: Torrent, file: dict) -> str:
+    """Local path a torrent's file is written to."""
+    rel = os.path.join(_root_folder(t.name, t.files), file.get("name", ""))
+    return _safe_dest(t.category, rel)
 
 
 def _map_files(entry: dict) -> list[dict]:
@@ -202,7 +236,7 @@ async def _download_file(t: Torrent, file: dict, progress: dict) -> None:
     file_id = file["id"]
     rel = file["name"]
     expected = int(file.get("size") or 0)
-    dest = _safe_dest(t.category, rel)
+    dest = _file_dest(t, file)
     os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
 
     existing = os.path.getsize(dest) if os.path.exists(dest) else 0
@@ -342,7 +376,7 @@ def _files_local(t: Torrent) -> bool:
         return False
     for f in t.files:
         try:
-            dest = _safe_dest(t.category, f.get("name", ""))
+            dest = _file_dest(t, f)
             if os.path.getsize(dest) != int(f.get("size") or 0):
                 return False
         except (OSError, ValueError):

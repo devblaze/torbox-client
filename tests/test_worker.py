@@ -46,10 +46,58 @@ def test_content_path_single_root_folder():
     assert cp.endswith(os.path.join("radarr", "Movie (2026)"))
 
 
-def test_content_path_multiple_roots_falls_back_to_base():
+def test_content_path_single_file_keeps_torbox_layout():
     t = Torrent(hash="a" * 40, name="X", category="radarr")
-    files = [{"name": "a.mkv"}, {"name": "b.mkv"}]
-    assert worker._content_path(t, files) == worker._save_path("radarr")
+    files = [{"name": "movie.mkv"}]
+    assert worker._content_path(t, files) == os.path.join(worker._save_path("radarr"), "movie.mkv")
+    assert worker._root_folder(t.name, files) == ""
+
+
+def test_content_path_multiple_roots_gets_its_own_folder():
+    """Sonarr refuses a completed torrent whose content_path is the client's
+    base download dir, so loose files need a folder made for them."""
+    t = Torrent(hash="a" * 40, name="Show.S01E01", category="radarr")
+    files = [{"name": "a.mkv"}, {"name": "b.nfo"}]
+    base = worker._save_path("radarr")
+    assert worker._content_path(t, files) == os.path.join(base, "Show.S01E01")
+    assert worker._content_path(t, files) != base
+    assert worker._root_folder(t.name, files) == "Show.S01E01"
+
+
+def test_content_path_without_files_is_still_below_base():
+    t = Torrent(hash="a" * 40, name="Nothing Yet", category="radarr")
+    base = worker._save_path("radarr")
+    assert worker._content_path(t, []) == os.path.join(base, "Nothing Yet")
+
+
+@pytest.mark.parametrize("name", [
+    "../../etc/passwd", "a/b", "..", ".", "   ", "", "C:\\evil\\x", "  ..  ",
+])
+def test_as_segment_stays_one_harmless_segment(name):
+    """A torrent name comes from TorBox, so it has to be safe to use as a
+    directory name — one segment, never empty, never a traversal."""
+    seg = worker._as_segment(name)
+    assert seg and "/" not in seg and "\\" not in seg
+    assert seg not in (".", "..")
+    # And it survives the path guard rather than blowing up a download.
+    worker._safe_dest("radarr", os.path.join(seg, "f.mkv"))
+
+
+def test_as_segment_keeps_ordinary_names_intact():
+    assert worker._as_segment("Show.S01E01.1080p-GRP") == "Show.S01E01.1080p-GRP"
+
+
+def test_file_dest_puts_loose_files_under_the_made_folder():
+    t = Torrent(hash="a" * 40, name="Show.S01E01", category="radarr",
+                files=[{"id": 1, "name": "a.mkv"}, {"id": 2, "name": "b.nfo"}])
+    dest = worker._file_dest(t, t.files[0])
+    assert dest == worker._safe_dest("radarr", "Show.S01E01/a.mkv")
+
+
+def test_file_dest_leaves_a_torrents_own_folder_alone():
+    t = Torrent(hash="a" * 40, name="X", category="radarr",
+                files=[{"id": 1, "name": "Pack/a.mkv"}, {"id": 2, "name": "Pack/b.mkv"}])
+    assert worker._file_dest(t, t.files[0]) == worker._safe_dest("radarr", "Pack/a.mkv")
 
 
 def test_map_files_normalises_backslashes_and_size():

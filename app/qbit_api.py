@@ -486,7 +486,10 @@ async def torrents_add(request: Request) -> Response:
 
 def _delete_local(t: Torrent) -> None:
     """Remove the downloaded content (file or root folder) from local disk."""
-    roots = {f.get("name", "").split("/", 1)[0] for f in t.files if f.get("name")}
+    # A torrent we gave its own folder is removed by that folder; otherwise by
+    # each top-level name TorBox reported.
+    made_root = worker._root_folder(t.name, t.files)
+    roots = {made_root} if made_root else worker._top_segments(t.files)
     for root in roots:
         if not root:
             continue
