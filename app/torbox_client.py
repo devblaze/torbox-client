@@ -90,7 +90,16 @@ class TorBoxClient:
         # data is usually {"torrent_id": .., "hash": .., "auth_id": ..}
         return payload.get("data") or {}
 
-    async def my_list(self, torrent_id: Optional[int] = None, bypass_cache: bool = True) -> list[dict]:
+    async def my_list(self, torrent_id: Optional[int] = None,
+                      bypass_cache: Optional[bool] = None) -> list[dict]:
+        """List the account's torrents.
+
+        ``bypass_cache`` defaults to the ``TORBOX_BYPASS_CACHE`` setting: an
+        uncached listing is the freshest view but by far the most expensive
+        request we make, so it is worth being able to turn off.
+        """
+        if bypass_cache is None:
+            bypass_cache = settings.torbox_bypass_cache
         params: dict[str, Any] = {"bypass_cache": "true" if bypass_cache else "false"}
         if torrent_id is not None:
             params["id"] = torrent_id
