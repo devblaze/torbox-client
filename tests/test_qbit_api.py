@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 from app import qbit_api
@@ -143,3 +145,43 @@ def test_login_then_authorized_then_logout(client):
 
     client.post("/api/v2/auth/logout")
     assert client.get("/api/v2/torrents/info").status_code == 403
+
+
+# --------------------------------------------------------------------------- #
+# local deletion follows the same layout the worker wrote
+# --------------------------------------------------------------------------- #
+def _seed(rel: str) -> str:
+    """Create a file under the real (temp) download dir and return its path."""
+    from app import worker
+    dest = worker._safe_dest("radarr", rel)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "wb") as fh:
+        fh.write(b"x")
+    return dest
+
+
+def test_delete_local_removes_the_folder_made_for_loose_files():
+    from app import worker
+    from app.store import Torrent
+
+    t = Torrent(hash="a" * 40, name="Del.Loose.S01E01", category="radarr",
+                files=[{"id": 1, "name": "a.mkv"}, {"id": 2, "name": "b.nfo"}])
+    a = _seed("Del.Loose.S01E01/a.mkv")
+    _seed("Del.Loose.S01E01/b.nfo")
+    folder = os.path.dirname(a)
+
+    qbit_api._delete_local(t)
+    assert not os.path.exists(folder)
+
+
+def test_delete_local_removes_a_torrents_own_folder():
+    from app.store import Torrent
+
+    t = Torrent(hash="b" * 40, name="X", category="radarr",
+                files=[{"id": 1, "name": "DelPack/a.mkv"}, {"id": 2, "name": "DelPack/b.mkv"}])
+    a = _seed("DelPack/a.mkv")
+    _seed("DelPack/b.mkv")
+    folder = os.path.dirname(a)
+
+    qbit_api._delete_local(t)
+    assert not os.path.exists(folder)
