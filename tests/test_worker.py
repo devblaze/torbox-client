@@ -229,6 +229,110 @@ async def test_sync_once_empty_store_skips_poll(worker_env, monkeypatch):
     assert fake.list_calls == 0
 
 
+class _SlowClient(_FakeClient):
+    """A client whose my_list() takes long enough for a download task to finish."""
+
+    def __init__(self, entries=None, on_list=None):
+        super().__init__(entries)
+        self._on_list = on_list
+
+    async def my_list(self):
+        self.list_calls += 1
+        if self._on_list:
+            self._on_list()          # the pull finishes mid-flight
+        return self.entries
+
+
+def _ready_entry(h):
+    return {"id": 1, "hash": h, "name": "x", "size": 100, "progress": 1.0,
+            "download_finished": True, "download_present": True,
+            "files": [{"id": 1, "name": "f.mkv", "size": 100}]}
+
+
+async def test_completion_during_mylist_is_not_reverted(worker_env, monkeypatch):
+    """sync_once snapshots the store, then awaits mylist. A download task that
+    finishes inside that window had its COMPLETED row overwritten by the stale
+    snapshot, leaving the torrent stuck in 'downloading' with nothing behind
+    it — and the start gate then refuses to restart it, so it never recovers."""
+    h = "a" * 40
+    worker_env.upsert(Torrent(hash=h, name="x", category="radarr", torbox_id=1,
+                              state=STATE_DOWNLOADING, local_progress=0.98,
+                              files=[{"id": 1, "name": "f.mkv", "size": 100}]))
+
+    def finish_the_pull():
+        done = worker_env.get(h)
+        done.state = STATE_COMPLETED
+        done.local_progress = 1.0
+        done.completion_on = int(time.time())
+        worker_env.upsert(done)
+
+    monkeypatch.setattr(worker, "client",
+                        _SlowClient([_ready_entry(h)], on_list=finish_the_pull))
+    await worker.sync_once()
+
+    t = worker_env.get(h)
+    assert t.state == STATE_COMPLETED
+    assert t.local_progress == 1.0
+
+
+async def test_requeue_during_mylist_is_not_reverted(worker_env, monkeypatch):
+    """Same race from the other side: the stall watchdog puts a torrent back to
+    the cloud state mid-listing, and the stale snapshot wrote 'downloading'
+    over it — wedging the very torrent the watchdog just rescued."""
+    h = "a" * 40
+    worker_env.upsert(Torrent(hash=h, name="x", category="radarr", torbox_id=1,
+                              state=STATE_DOWNLOADING, local_progress=0.98,
+                              files=[{"id": 1, "name": "f.mkv", "size": 100}]))
+
+    def watchdog_requeues():
+        cur = worker_env.get(h)
+        cur.state = STATE_CLOUD
+        cur.dlspeed = 0
+        worker_env.upsert(cur)
+
+    monkeypatch.setattr(worker, "_download_file", lambda *a, **k: None)
+    monkeypatch.setattr(worker, "client",
+                        _SlowClient([_ready_entry(h)], on_list=watchdog_requeues))
+    await worker.sync_once()
+
+    # Picked up for another attempt rather than written back to 'downloading'
+    # with no task behind it.
+    assert h in worker._downloading
+    await worker.shutdown()
+
+
+async def test_orphaned_downloading_row_is_requeued(worker_env, monkeypatch):
+    """Recovery for rows already wedged by an older build: 'downloading' with no
+    entry in _downloading means no task exists. resume_interrupted() only runs
+    at startup, so without this they stay stuck until the container restarts."""
+    h = "a" * 40
+    worker_env.upsert(Torrent(hash=h, name="x", category="radarr", torbox_id=1,
+                              state=STATE_DOWNLOADING, local_progress=0.98,
+                              files=[{"id": 1, "name": "f.mkv", "size": 100}]))
+    monkeypatch.setattr(worker, "_download_file", lambda *a, **k: None)
+    monkeypatch.setattr(worker, "client", _FakeClient([_ready_entry(h)]))
+    assert h not in worker._downloading
+
+    await worker.sync_once()
+    assert h in worker._downloading
+    await worker.shutdown()
+
+
+async def test_live_pull_is_left_alone(worker_env, monkeypatch):
+    """The recovery must not disturb a torrent that really is being pulled."""
+    h = "a" * 40
+    worker_env.upsert(Torrent(hash=h, name="x", category="radarr", torbox_id=1,
+                              state=STATE_DOWNLOADING, local_progress=0.5,
+                              files=[{"id": 1, "name": "f.mkv", "size": 100}]))
+    worker._downloading.add(h)  # a task is running
+    monkeypatch.setattr(worker, "client", _FakeClient([_ready_entry(h)]))
+
+    await worker.sync_once()
+    t = worker_env.get(h)
+    assert t.state == STATE_DOWNLOADING
+    assert t.local_progress == 0.5
+
+
 async def test_parallel_torrent_gate(worker_env, monkeypatch):
     entry = {"id": 1, "hash": "a" * 40, "name": "x", "size": 100, "progress": 1.0,
              "download_finished": True, "download_present": True,

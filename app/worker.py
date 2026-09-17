@@ -484,6 +484,11 @@ async def _cleanup_cloud(t: Torrent) -> None:
         log.warning("TorBox cleanup delete failed for %s: %s", t.name, exc)
         return
     hours = runtime.get("torbox_cleanup_hours")
+    # Re-read after the await: torrents/delete may have removed the row while
+    # the cloud delete was in flight, and upserting our copy would resurrect it.
+    t = store.get(t.hash)
+    if t is None:
+        return
     t.torbox_id = None
     store.upsert(t)
     store.add_event(t.hash, t.name, t.category, "cloud_removed",
@@ -544,7 +549,28 @@ async def sync_once() -> None:
     by_id = {e.get("id"): e for e in entries if e.get("id") is not None}
     by_hash = {str(e.get("hash", "")).lower(): e for e in entries}
 
-    for t in tracked:
+    for stale in tracked:
+        # Re-read: the mylist call above is a network round trip, and on a large
+        # account it is not quick. A download task can finish, fail or be put
+        # back to the cloud state inside that window, and writing the snapshot
+        # we took beforehand back over the row would undo it — leaving the
+        # torrent in 'downloading' with no task behind it, which the start gate
+        # below then refuses to restart. That wedges it until the next restart.
+        t = store.get(stale.hash)
+        if t is None or t.state in (STATE_COMPLETED, STATE_ERROR):
+            continue
+
+        if t.state == STATE_DOWNLOADING and t.hash not in _downloading:
+            # No task owns this row. _download_torrent only leaves _downloading
+            # once it has written a final state, so this means the task is gone:
+            # killed mid-flight, or lost to the overwrite described above by an
+            # older build. resume_interrupted() only runs at startup, so recover
+            # it here instead of waiting for one.
+            log.info("Requeuing %s — marked downloading with no task behind it", t.name)
+            t.state = STATE_CLOUD
+            t.dlspeed = 0
+            store.upsert(t)
+
         entry = None
         if t.torbox_id is not None:
             entry = by_id.get(t.torbox_id)
