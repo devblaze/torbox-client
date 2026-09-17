@@ -233,6 +233,13 @@ def _qbit_state(t: Torrent) -> str:
     if t.state == STATE_ERROR:
         return "error"
     if t.state == STATE_COMPLETED:
+        # pausedUP, not the newer stoppedUP: both mean the same thing to a
+        # current *arr, but stoppedUP only landed in Sonarr v4.0.5.1710 and
+        # Radarr v5.5.3.8819. Older builds drop it into their `default:` arm,
+        # which reports the item as still Downloading, and
+        # CompletedDownloadService.Check() bails unless the status is Completed
+        # — so they would stop importing entirely. pausedUP is understood by
+        # every version. Don't "modernise" this.
         return "pausedUP"  # finished + safe to import/remove
     if t.state == STATE_DOWNLOADING:
         return "downloading"
@@ -270,7 +277,14 @@ def _to_qbit(t: Torrent) -> dict:
         "num_leechs": 0,
         "num_incomplete": 0,
         "ratio": 0.0,
-        "ratio_limit": -1,
+        # 0, not -1. Sonarr/Radarr gate removal on HasReachedSeedLimit(), which
+        # only consults a limit when it is >= 0 (or -2, meaning "use the client's
+        # global"). -1 means "unlimited", so both branches are skipped, the item
+        # never counts as done seeding, and "Remove Completed Downloads" never
+        # fires. With 0 against our ratio of 0.0 the limit reads as already met.
+        # This also drives CanMoveFiles, so -1 silently turned every import into
+        # a copy instead of a move.
+        "ratio_limit": 0,
         "eta": eta,
         "state": _qbit_state(t),
         "category": t.category,
@@ -286,7 +300,11 @@ def _to_qbit(t: Torrent) -> dict:
         "amount_left": amount_left,
         "time_active": max(now - (t.added_on or now), 0),
         "seeding_time": 0,
-        "seeding_time_limit": -1,
+        "seeding_time_limit": 0,  # same reasoning as ratio_limit
+        # Explicitly unlimited. Left absent it deserializes to -2 ("use global"),
+        # and a global inactive-seeding limit would then be measured against
+        # last_activity, making every torrent instantly removable.
+        "inactive_seeding_time_limit": -1,
         "last_activity": t.last_update or now,
         "auto_tmm": False,
         "availability": 1.0 if progress >= 1 else -1.0,

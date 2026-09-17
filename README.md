@@ -18,6 +18,9 @@ Sonarr/Radarr ──(qBittorrent API)──▶ torbox-client ──(TorBox API)�
 4. When TorBox finishes, the worker downloads each file to `/downloads/<category>/…`.
 5. Once every file is local, the torrent reports **completed** and Sonarr/Radarr import it (hardlink/move into your library).
 6. After import, *arr removes it; the service deletes the local files and (optionally) the TorBox cloud torrent.
+   Completed torrents are reported with their seeding requirement already satisfied, which is what lets
+   Sonarr/Radarr's **Remove Completed Downloads** fire — seeding, if you want it, happens on TorBox's side
+   via `TORBOX_SEED`, not locally.
 
 ## Prerequisites
 
