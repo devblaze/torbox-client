@@ -168,7 +168,8 @@ All configuration is via environment variables (see `.env.example`):
 | `SAVE_PATH` | = `DOWNLOAD_DIR` | Path reported to *arr (set only if their mount path differs). |
 | `PUID` / `PGID` | `1000` / `1000` | File ownership. **Use `99` / `100` on Unraid.** |
 | `UMASK` | `022` | Umask for created files. |
-| `POLL_INTERVAL` | `15` | Seconds between TorBox status polls. |
+| `POLL_INTERVAL` | `15` | Seconds between TorBox status polls. Polls are skipped entirely while nothing is downloading. |
+| `TORBOX_BYPASS_CACHE` | `true` | Ask TorBox to skip its own cache on each status poll. Freshest progress, but the most expensive request we make — set `false` on a large account if you poll often. |
 | `MAX_PARALLEL_DOWNLOADS` | `4` | Concurrent file downloads from the TorBox CDN. |
 | `MAX_PARALLEL_TORRENTS` | `2` | Torrents pulled locally at the same time (0 = unlimited). |
 | `MAX_DOWNLOAD_SPEED` | `0` | Aggregate download cap in MiB/s across all files (0 = unlimited). Converting from Mbps: divide by ~8.4 — 50 Mbps ≈ `6`, 100 Mbps ≈ `12`, 1 Gbps ≈ `119`. |

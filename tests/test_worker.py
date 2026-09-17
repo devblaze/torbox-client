@@ -124,8 +124,10 @@ class _FakeClient:
     def __init__(self, entries=None):
         self.entries = entries or []
         self.deleted = []
+        self.list_calls = 0
 
     async def my_list(self):
+        self.list_calls += 1
         return self.entries
 
     async def control(self, tid, op):
@@ -146,6 +148,37 @@ async def test_cleanup_deletes_old_cloud_copy_keeps_recent(worker_env, monkeypat
     assert worker_env.get("a" * 40).torbox_id is None
     assert worker_env.get("b" * 40).torbox_id == 43
     assert any(e["event"] == "cloud_removed" for e in worker_env.history())
+    # Cleanup deletes by torbox_id, so it never needed the listing.
+    assert fake.list_calls == 0
+
+
+async def test_sync_once_skips_poll_when_nothing_actionable(worker_env, monkeypatch):
+    """Completed/errored rows are kept so the *arr apps can still import them,
+    but they are never matched against a mylist entry — polling for those alone
+    is a full uncached listing of the account with nothing to do."""
+    fake = _FakeClient()
+    monkeypatch.setattr(worker, "client", fake)
+    worker_env.upsert(Torrent(hash="a" * 40, name="done", state=STATE_COMPLETED,
+                              torbox_id=None, completion_on=int(time.time())))
+    worker_env.upsert(Torrent(hash="b" * 40, name="bad", state=STATE_ERROR, torbox_id=None))
+    await worker.sync_once()
+    assert fake.list_calls == 0
+
+
+async def test_sync_once_polls_when_something_is_actionable(worker_env, monkeypatch):
+    fake = _FakeClient()
+    monkeypatch.setattr(worker, "client", fake)
+    worker_env.upsert(Torrent(hash="a" * 40, name="done", state=STATE_COMPLETED, torbox_id=None))
+    worker_env.upsert(Torrent(hash="b" * 40, name="busy", state=STATE_CLOUD, torbox_id=7))
+    await worker.sync_once()
+    assert fake.list_calls == 1
+
+
+async def test_sync_once_empty_store_skips_poll(worker_env, monkeypatch):
+    fake = _FakeClient()
+    monkeypatch.setattr(worker, "client", fake)
+    await worker.sync_once()
+    assert fake.list_calls == 0
 
 
 async def test_parallel_torrent_gate(worker_env, monkeypatch):

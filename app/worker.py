@@ -415,10 +415,31 @@ def resume_interrupted() -> None:
             log.info("Resuming interrupted local download after restart: %s", t.name)
 
 
+def _needs_cloud_cleanup(t: Torrent, now: int, cleanup_after: float) -> bool:
+    return bool(t.state == STATE_COMPLETED and cleanup_after > 0 and t.torbox_id is not None
+                and t.completion_on and now - t.completion_on >= cleanup_after)
+
+
 async def sync_once() -> None:
     tracked = store.all()
+    now = int(time.time())
+    cleanup_after = runtime.get("torbox_cleanup_hours") * 3600
+
+    # Age-based cloud cleanup deletes by id, so it needs no listing — run it
+    # before deciding whether the poll itself is worth making.
+    for t in tracked:
+        if _needs_cloud_cleanup(t, now, cleanup_after):
+            await _cleanup_cloud(t)
+
+    # Completed/errored rows are kept on purpose (Sonarr/Radarr still have to
+    # import them), but they are never matched against a mylist entry — after
+    # _cleanup_cloud() they don't even have a torbox_id any more. Polling for
+    # those alone means an uncached listing of the whole TorBox account every
+    # POLL_INTERVAL, forever, with nothing to do.
+    tracked = [t for t in tracked if t.state not in (STATE_COMPLETED, STATE_ERROR)]
     if not tracked:
         return
+
     try:
         entries = await client.my_list()
     except Exception as exc:  # noqa: BLE001
@@ -430,15 +451,8 @@ async def sync_once() -> None:
 
     by_id = {e.get("id"): e for e in entries if e.get("id") is not None}
     by_hash = {str(e.get("hash", "")).lower(): e for e in entries}
-    now = int(time.time())
-    cleanup_after = runtime.get("torbox_cleanup_hours") * 3600
 
     for t in tracked:
-        if (t.state == STATE_COMPLETED and cleanup_after > 0 and t.torbox_id is not None
-                and t.completion_on and now - t.completion_on >= cleanup_after):
-            await _cleanup_cloud(t)
-        if t.state in (STATE_COMPLETED, STATE_ERROR):
-            continue
         entry = None
         if t.torbox_id is not None:
             entry = by_id.get(t.torbox_id)

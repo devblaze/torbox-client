@@ -94,6 +94,10 @@ class Settings:
     torbox_seed: int = _int("TORBOX_SEED", 1)
     # Allow TorBox to zip download folders (we download per-file, so keep off).
     torbox_allow_zip: bool = _bool("TORBOX_ALLOW_ZIP", False)
+    # Ask TorBox to skip its own cache on every mylist poll. Fresher, but a much
+    # more expensive request on a large account; turn off if you poll often and
+    # can live with progress lagging a few seconds behind.
+    torbox_bypass_cache: bool = _bool("TORBOX_BYPASS_CACHE", True)
 
     # --- Notifications (defaults; editable at runtime in the web UI) ---
     # Start warning when the TorBox subscription has this many days left (0 = off).
