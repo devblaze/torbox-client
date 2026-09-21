@@ -23,6 +23,14 @@ class TorBoxError(Exception):
     pass
 
 
+class TorBoxDuplicateError(TorBoxError):
+    """TorBox already holds this torrent — not a failure, just already there."""
+
+
+# How TorBox words its refusal when the infohash is already in the account.
+_DUPLICATE_MARKERS = ("already queued", "already in queue", "already added", "duplicate")
+
+
 class TorBoxClient:
     def __init__(self, api_key: str, base_url: str):
         self.api_key = api_key
@@ -86,7 +94,17 @@ class TorBoxClient:
             resp.raise_for_status()
             raise TorBoxError("Non-JSON response from createtorrent")
         if not payload.get("success", False):
-            raise TorBoxError(payload.get("detail") or f"createtorrent failed ({resp.status_code})")
+            detail = str(payload.get("detail") or f"createtorrent failed ({resp.status_code})")
+            if any(m in detail.lower() for m in _DUPLICATE_MARKERS):
+                # The torrent is already in the account, which is not a reason
+                # to throw away the grab. If TorBox named it, adopt it here;
+                # otherwise let the caller find it by infohash.
+                existing = payload.get("data")
+                if isinstance(existing, dict) and existing.get("torrent_id") is not None:
+                    log.info("TorBox already had this torrent (id=%s)", existing.get("torrent_id"))
+                    return existing
+                raise TorBoxDuplicateError(detail)
+            raise TorBoxError(detail)
         # data is usually {"torrent_id": .., "hash": .., "auth_id": ..}
         return payload.get("data") or {}
 

@@ -32,7 +32,7 @@ from .store import (
     Torrent,
     store,
 )
-from .torbox_client import client
+from .torbox_client import TorBoxDuplicateError, client
 
 log = logging.getLogger("qbit")
 
@@ -420,16 +420,37 @@ async def _fetch_torrent_url(url: str) -> bytes:
         raise ValueError("too many redirects fetching torrent URL")
 
 
+async def _create_or_adopt(create, infohash: str | None) -> dict:
+    """Add the torrent to TorBox, or adopt the copy TorBox already has.
+
+    TorBox refuses a second add of the same infohash with "Download already
+    queued". That is not a failure — the torrent is sitting in the account,
+    usually finished — so find it in the listing and carry on, rather than
+    dropping Sonarr/Radarr's grab on the floor.
+    """
+    try:
+        return await create()
+    except TorBoxDuplicateError:
+        if not infohash:
+            raise
+        for entry in await client.my_list():
+            if str(entry.get("hash", "")).lower() == infohash.lower():
+                log.info("TorBox already had %s — adopting id=%s", infohash, entry.get("id"))
+                return {"torrent_id": entry.get("id"), "hash": entry.get("hash"),
+                        "name": entry.get("name")}
+        raise
+
+
 async def _add_magnet(magnet: str, category: str) -> None:
     infohash = bencode.infohash_from_magnet(magnet)
-    data = await client.add_magnet(magnet)
+    data = await _create_or_adopt(lambda: client.add_magnet(magnet), infohash)
     _record_added(data, infohash, category, name_hint=_magnet_name(magnet))
 
 
 async def _add_torrent_bytes(content: bytes, category: str) -> None:
     infohash = bencode.infohash_from_torrent(content)
     name = bencode.torrent_name(content)
-    data = await client.add_torrent_file(content)
+    data = await _create_or_adopt(lambda: client.add_torrent_file(content), infohash)
     _record_added(data, infohash, category, name_hint=name)
 
 

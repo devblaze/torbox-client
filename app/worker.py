@@ -34,7 +34,14 @@ log = logging.getLogger("worker")
 _downloading: set[str] = set()
 # Failed local-pull attempts per torrent; reset on success, capped below.
 _attempts: dict[str, int] = {}
-_TORRENT_RETRY_LIMIT = 3
+_TORRENT_RETRY_LIMIT = settings.torrent_retry_limit
+# Rounds that retry at once before the backoff schedule starts; a momentary CDN
+# blip clears inside these, anything longer needs real time to pass.
+_FAST_RETRY_ROUNDS = 3
+# hash -> epoch seconds before which the next round must not start.
+_retry_after: dict[str, float] = {}
+# hash -> when we first saw a finished cloud copy with an empty file list.
+_fileless_since: dict[str, float] = {}
 
 _FAILED_STATES = {"failed", "error", "cberror", "uploaderror"}
 
@@ -131,6 +138,17 @@ def forget(hash_: str) -> None:
     """Drop per-torrent worker state when a torrent is removed."""
     _downloading.discard(hash_)
     _attempts.pop(hash_, None)
+    _retry_after.pop(hash_, None)
+    _fileless_since.pop(hash_, None)
+
+
+def _retry_delay(round_: int) -> float:
+    """Seconds to hold off before local-pull round ``round_ + 1``."""
+    if round_ <= _FAST_RETRY_ROUNDS:
+        return 0.0
+    step = round_ - _FAST_RETRY_ROUNDS - 1
+    return float(min(settings.torrent_retry_backoff * (2 ** step),
+                     settings.torrent_retry_backoff_max))
 
 
 async def shutdown() -> None:
@@ -410,6 +428,7 @@ async def _download_torrent(hash_: str) -> None:
         )
         log.info("Completed local download: %s", done.name)
         _attempts.pop(hash_, None)
+        _retry_after.pop(hash_, None)
     except Exception as exc:  # noqa: BLE001
         # TaskGroup wraps failures in an ExceptionGroup; surface the first cause.
         if isinstance(exc, BaseExceptionGroup):
@@ -421,11 +440,14 @@ async def _download_torrent(hash_: str) -> None:
             if n < _TORRENT_RETRY_LIMIT:
                 # Back to the cloud state so the next sync re-triggers the pull;
                 # already-downloaded bytes resume via Range.
+                delay = _retry_delay(n)
+                if delay > 0:
+                    _retry_after[hash_] = time.time() + delay
                 cur.state = STATE_CLOUD
                 cur.dlspeed = 0
                 store.upsert(cur)
-                log.warning("Local download of %s failed (round %d/%d) — will retry: %s",
-                            cur.name, n, _TORRENT_RETRY_LIMIT, exc)
+                log.warning("Local download of %s failed (round %d/%d) — retrying in %ds: %s",
+                            cur.name, n, _TORRENT_RETRY_LIMIT, int(delay), exc)
             else:
                 cur.state = STATE_ERROR
                 cur.error = f"local download failed: {exc}"
@@ -595,9 +617,34 @@ async def sync_once() -> None:
             continue
 
         ready = bool(entry.get("download_finished")) and bool(entry.get("download_present", True))
+
+        if ready and not t.files:
+            # TorBox calls the cloud copy finished but hands us nothing to
+            # fetch. _download_torrent bails before it even logs, so this spins
+            # silently on every poll — one torrent sat like this for 45 days.
+            # Give TorBox a grace period to populate the list, then fail so the
+            # *arr app is free to grab a different release.
+            waited = time.time() - _fileless_since.setdefault(t.hash, time.time())
+            if settings.fileless_timeout > 0 and waited >= settings.fileless_timeout:
+                t.state = STATE_ERROR
+                t.error = (f"TorBox reported the download finished but returned no "
+                           f"file list within {int(waited / 60)} minutes")
+                store.upsert(t)
+                store.add_event(t.hash, t.name, t.category, "error",
+                                detail=t.error, size=t.size)
+                log.warning("No file list for %s after %ds — reporting it failed",
+                            t.name, int(waited))
+                _fileless_since.pop(t.hash, None)
+            else:
+                store.upsert(t)
+            continue
+        _fileless_since.pop(t.hash, None)
+
         slots_full = (settings.max_parallel_torrents > 0
                       and len(_downloading) >= settings.max_parallel_torrents)
-        if ready and t.hash not in _downloading and t.state != STATE_DOWNLOADING and not slots_full:
+        backing_off = time.time() < _retry_after.get(t.hash, 0)
+        if (ready and t.hash not in _downloading and t.state != STATE_DOWNLOADING
+                and not slots_full and not backing_off):
             t.state = STATE_DOWNLOADING
             t.save_path = _save_path(t.category)
             store.upsert(t)

@@ -83,6 +83,17 @@ class Settings:
     stall_timeout: int = _int("STALL_TIMEOUT", 90)
     # Attempts per file (each retry gets a fresh CDN link and resumes via Range).
     download_retries: int = _int("DOWNLOAD_RETRIES", 4)
+    # Whole-torrent local-pull rounds before the download is reported failed to
+    # Sonarr/Radarr, freeing them to grab a different release.
+    torrent_retry_limit: int = _int("TORRENT_RETRY_LIMIT", 8)
+    # The first rounds retry at once, which clears a momentary CDN blip. After
+    # those, each round waits, doubling from this many seconds up to the cap —
+    # the kind of outage that needs minutes, not seconds, to pass.
+    torrent_retry_backoff: int = _int("TORRENT_RETRY_BACKOFF", 300)
+    torrent_retry_backoff_max: int = _int("TORRENT_RETRY_BACKOFF_MAX", 3600)
+    # How long TorBox may report a finished cloud copy while giving us no file
+    # list before we call the download failed (0 = wait forever).
+    fileless_timeout: int = _int("FILELESS_TIMEOUT", 900)
     # Hours after a completed local download before the TorBox cloud copy is
     # deleted to free the account's active-torrent slots (0 = never).
     torbox_cleanup_hours: float = _float("TORBOX_CLEANUP_HOURS", 24)

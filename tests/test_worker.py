@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import os
 import time
 from datetime import datetime, timedelta, timezone
@@ -331,6 +332,146 @@ async def test_live_pull_is_left_alone(worker_env, monkeypatch):
     t = worker_env.get(h)
     assert t.state == STATE_DOWNLOADING
     assert t.local_progress == 0.5
+
+
+# --------------------------------------------------------------------------- #
+# retry backoff before a failure is reported to the *arr app
+# --------------------------------------------------------------------------- #
+def test_retry_delay_is_immediate_then_doubles():
+    """The first rounds clear a momentary blip; after that, real time has to
+    pass, because the outages that need retrying take minutes."""
+    base = worker.settings.torrent_retry_backoff
+    cap = worker.settings.torrent_retry_backoff_max
+    assert [worker._retry_delay(n) for n in (1, 2, 3)] == [0.0, 0.0, 0.0]
+    assert worker._retry_delay(4) == base
+    assert worker._retry_delay(5) == base * 2
+    assert worker._retry_delay(6) == base * 4
+    # ...and never longer than the cap.
+    assert worker._retry_delay(99) == cap
+
+
+def _with_settings(monkeypatch, **overrides):
+    """Swap in a settings copy — Settings is frozen, so it can't be patched."""
+    monkeypatch.setattr(worker, "settings",
+                        dataclasses.replace(worker.settings, **overrides))
+
+
+def test_retry_delay_respects_a_lowered_cap(monkeypatch):
+    _with_settings(monkeypatch, torrent_retry_backoff_max=60)
+    assert worker._retry_delay(99) <= 60
+
+
+async def test_failed_round_holds_off_the_next_attempt(worker_env, monkeypatch):
+    h = "a" * 40
+    worker_env.upsert(Torrent(hash=h, name="x", category="radarr", torbox_id=1,
+                              state=STATE_DOWNLOADING,
+                              files=[{"id": 1, "name": "f.mkv", "size": 10}]))
+
+    async def boom(t, f, progress):
+        raise IOError("nope")
+
+    monkeypatch.setattr(worker, "_download_file", boom)
+    monkeypatch.setattr(worker, "_retry_delay", lambda n: 600.0)
+    worker._downloading.add(h)
+    await worker._download_torrent(h)
+
+    assert worker_env.get(h).state == STATE_CLOUD
+    assert worker._retry_after[h] > time.time() + 500
+
+    # The sync loop must leave it alone until the deadline passes.
+    monkeypatch.setattr(worker, "client", _FakeClient([_ready_entry(h)]))
+    await worker.sync_once()
+    assert h not in worker._downloading
+
+    worker._retry_after[h] = time.time() - 1  # deadline reached
+    monkeypatch.setattr(worker, "_download_file", lambda *a, **k: None)
+    await worker.sync_once()
+    assert h in worker._downloading
+    await worker.shutdown()
+
+
+async def test_error_is_reported_only_after_the_configured_rounds(worker_env, monkeypatch):
+    """Sonarr must not be told it failed until we have genuinely given up."""
+    h = "a" * 40
+    monkeypatch.setattr(worker, "_TORRENT_RETRY_LIMIT", 3)
+    monkeypatch.setattr(worker, "_retry_delay", lambda n: 0.0)
+
+    async def boom(t, f, progress):
+        raise IOError("nope")
+
+    monkeypatch.setattr(worker, "_download_file", boom)
+    for round_ in (1, 2):
+        worker_env.upsert(Torrent(hash=h, name="x", category="radarr", torbox_id=1,
+                                  state=STATE_DOWNLOADING,
+                                  files=[{"id": 1, "name": "f.mkv", "size": 10}]))
+        worker._downloading.add(h)
+        await worker._download_torrent(h)
+        assert worker_env.get(h).state == STATE_CLOUD, f"round {round_} gave up early"
+
+    worker_env.upsert(Torrent(hash=h, name="x", category="radarr", torbox_id=1,
+                              state=STATE_DOWNLOADING,
+                              files=[{"id": 1, "name": "f.mkv", "size": 10}]))
+    worker._downloading.add(h)
+    await worker._download_torrent(h)
+    assert worker_env.get(h).state == STATE_ERROR
+
+
+# --------------------------------------------------------------------------- #
+# a finished cloud copy with no file list must not spin forever
+# --------------------------------------------------------------------------- #
+def _fileless_entry(h):
+    e = _ready_entry(h)
+    e["files"] = []
+    return e
+
+
+async def test_fileless_torrent_waits_then_fails(worker_env, monkeypatch):
+    """_download_torrent bails before it logs when there are no files, so this
+    used to re-spawn silently on every poll — one torrent did for 45 days."""
+    h = "a" * 40
+    worker_env.upsert(Torrent(hash=h, name="x", category="radarr", torbox_id=1,
+                              state=STATE_CLOUD, files=[]))
+    monkeypatch.setattr(worker, "client", _FakeClient([_fileless_entry(h)]))
+
+    await worker.sync_once()
+    t = worker_env.get(h)
+    assert t.state == STATE_CLOUD          # still inside the grace period
+    assert h not in worker._downloading    # and not spinning up a doomed task
+
+    # Pretend the grace period has elapsed.
+    worker._fileless_since[h] = time.time() - worker.settings.fileless_timeout - 1
+    await worker.sync_once()
+    t = worker_env.get(h)
+    assert t.state == STATE_ERROR
+    assert "no file list" in t.error
+    assert any(e["event"] == "error" for e in worker_env.history())
+
+
+async def test_fileless_timeout_can_be_disabled(worker_env, monkeypatch):
+    h = "a" * 40
+    worker_env.upsert(Torrent(hash=h, name="x", category="radarr", torbox_id=1,
+                              state=STATE_CLOUD, files=[]))
+    monkeypatch.setattr(worker, "client", _FakeClient([_fileless_entry(h)]))
+    _with_settings(monkeypatch, fileless_timeout=0)
+    worker._fileless_since[h] = time.time() - 99999
+    await worker.sync_once()
+    assert worker_env.get(h).state == STATE_CLOUD
+
+
+async def test_files_arriving_late_clears_the_fileless_clock(worker_env, monkeypatch):
+    h = "a" * 40
+    worker_env.upsert(Torrent(hash=h, name="x", category="radarr", torbox_id=1,
+                              state=STATE_CLOUD, files=[]))
+    monkeypatch.setattr(worker, "client", _FakeClient([_fileless_entry(h)]))
+    await worker.sync_once()
+    assert h in worker._fileless_since
+
+    monkeypatch.setattr(worker, "client", _FakeClient([_ready_entry(h)]))
+    monkeypatch.setattr(worker, "_download_file", lambda *a, **k: None)
+    await worker.sync_once()
+    assert h not in worker._fileless_since
+    assert worker_env.get(h).state == STATE_DOWNLOADING
+    await worker.shutdown()
 
 
 async def test_parallel_torrent_gate(worker_env, monkeypatch):
