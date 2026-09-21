@@ -178,6 +178,10 @@ All configuration is via environment variables (see `.env.example`):
 | `MAX_DOWNLOAD_SPEED` | `0` | Aggregate download cap in MiB/s across all files (0 = unlimited). Converting from Mbps: divide by ~8.4 — 50 Mbps ≈ `6`, 100 Mbps ≈ `12`, 1 Gbps ≈ `119`. |
 | `STALL_TIMEOUT` | `90` | Seconds without data before a stalled stream is retried with a fresh link. A torrent whose local pull gains under 1 MiB in twice this long is abandoned and requeued, so a trickling CDN connection can't hold a download slot forever. |
 | `DOWNLOAD_RETRIES` | `4` | Attempts per file; each retry resumes from the bytes already on disk. |
+| `TORRENT_RETRY_LIMIT` | `8` | Whole-torrent pull rounds before the download is reported **failed** to Sonarr/Radarr, freeing them to grab a different release. |
+| `TORRENT_RETRY_BACKOFF` | `300` | The first 3 rounds retry at once (clearing a momentary blip); after that each round waits, doubling from this many seconds. |
+| `TORRENT_RETRY_BACKOFF_MAX` | `3600` | Cap on that wait. With the defaults a download is retried for ~2¼ hours before it is called failed. |
+| `FILELESS_TIMEOUT` | `900` | Seconds TorBox may report a finished cloud copy while returning no file list before the download is called failed (0 = wait forever). |
 | `TORBOX_CLEANUP_HOURS` | `24` | Delete the TorBox **cloud** copy this long after the local download completes, freeing your TorBox active-torrent slots (local files kept; 0 = never). ✏️ |
 | `CLOUD_MAX_AGE_DAYS` | `0` | Delete **any** item in the TorBox account older than this many days, tracked or not (0 = off). Items still being pulled locally are spared. ✏️ |
 | `DELETE_FROM_TORBOX_ON_REMOVE` | `true` | Delete the cloud torrent when *arr removes the download. |

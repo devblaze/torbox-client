@@ -240,3 +240,53 @@ def test_incomplete_torrent_is_not_reported_as_finished():
     assert q["progress"] < 1.0
     assert q["state"] == "downloading"
     assert q["amount_left"] > 0
+
+
+# --------------------------------------------------------------------------- #
+# a grab must not be dropped because TorBox already has the torrent
+# --------------------------------------------------------------------------- #
+async def test_duplicate_add_adopts_the_existing_torrent(monkeypatch):
+    """TorBox refuses a second add of the same infohash. The torrent is right
+    there in the account, so find it rather than throwing away the grab."""
+    from app.torbox_client import TorBoxDuplicateError
+
+    h = "4646c1789e687b3b51216dc33363a41e1f88c3e6"
+
+    async def duplicate():
+        raise TorBoxDuplicateError("Download already queued.")
+
+    async def fake_my_list():
+        return [{"id": 777, "hash": h.upper(), "name": "Already There"}]
+
+    monkeypatch.setattr(qbit_api.client, "my_list", fake_my_list)
+    data = await qbit_api._create_or_adopt(duplicate, h)
+    assert data["torrent_id"] == 777
+
+
+async def test_duplicate_add_still_raises_when_it_is_nowhere_to_be_found(monkeypatch):
+    from app.torbox_client import TorBoxDuplicateError
+
+    async def duplicate():
+        raise TorBoxDuplicateError("Download already queued.")
+
+    async def fake_my_list():
+        return [{"id": 1, "hash": "b" * 40, "name": "Something Else"}]
+
+    monkeypatch.setattr(qbit_api.client, "my_list", fake_my_list)
+    with pytest.raises(TorBoxDuplicateError):
+        await qbit_api._create_or_adopt(duplicate, "a" * 40)
+
+
+async def test_successful_add_does_not_consult_the_listing(monkeypatch):
+    called = {"v": False}
+
+    async def fine():
+        return {"torrent_id": 5}
+
+    async def fake_my_list():
+        called["v"] = True
+        return []
+
+    monkeypatch.setattr(qbit_api.client, "my_list", fake_my_list)
+    assert (await qbit_api._create_or_adopt(fine, "a" * 40))["torrent_id"] == 5
+    assert called["v"] is False

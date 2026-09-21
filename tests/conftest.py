@@ -36,6 +36,8 @@ def worker_env(tmp_path, monkeypatch):
     monkeypatch.setattr(worker, "store", st)
     worker._downloading.clear()
     worker._attempts.clear()
+    worker._retry_after.clear()
+    worker._fileless_since.clear()
     worker._background_tasks.clear()
     worker._subscription.clear()
     return st
